@@ -1,0 +1,5 @@
+# Ignore log files and build folders
+*.log
+dist/
+build/
+.idea/
