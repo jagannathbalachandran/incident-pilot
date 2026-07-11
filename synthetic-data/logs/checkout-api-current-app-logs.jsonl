@@ -1,0 +1,8 @@
+{"timestamp": "2026-07-11T08:15:00Z", "service": "checkout-api", "level": "ERROR", "message": "could not obtain connection from pool within 5000ms", "active_connections": 193, "max_connections": 200}
+{"timestamp": "2026-07-11T08:16:00Z", "service": "checkout-api", "level": "ERROR", "message": "could not obtain connection from pool within 5000ms", "active_connections": 200, "max_connections": 200}
+{"timestamp": "2026-07-11T08:17:00Z", "service": "checkout-api", "level": "ERROR", "message": "could not obtain connection from pool within 5000ms", "active_connections": 200, "max_connections": 200}
+{"timestamp": "2026-07-11T08:18:00Z", "service": "checkout-api", "level": "ERROR", "message": "could not obtain connection from pool within 5000ms", "active_connections": 200, "max_connections": 200}
+{"timestamp": "2026-07-11T08:19:00Z", "service": "checkout-api", "level": "ERROR", "message": "could not obtain connection from pool within 5000ms", "active_connections": 200, "max_connections": 200}
+{"timestamp": "2026-07-11T08:20:00Z", "service": "checkout-api", "level": "ERROR", "message": "could not obtain connection from pool within 5000ms", "active_connections": 200, "max_connections": 200}
+{"timestamp": "2026-07-11T08:20:00Z", "service": "checkout-api", "level": "WARN", "message": "request exceeded p99 SLO threshold (1500ms)", "p99_latency_ms": 1728.8}
+{"timestamp": "2026-07-11T08:21:00Z", "service": "checkout-api", "level": "ERROR", "message": "could not obtain connection from pool within 5000ms", "active_connections": 200, "max_connections": 200}
