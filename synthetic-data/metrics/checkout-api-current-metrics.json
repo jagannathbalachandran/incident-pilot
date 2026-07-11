@@ -4,7 +4,7 @@
   "related_postmortem": null,
   "series": [
     {
-      "timestamp": "2026-07-11T07:56:00Z",
+      "timestamp": "2026-07-11T17:40:00Z",
       "service": "checkout-api",
       "p99_latency_ms": 388.8,
       "error_rate_pct": 0.048,
@@ -14,7 +14,7 @@
       "phase": "baseline"
     },
     {
-      "timestamp": "2026-07-11T07:57:00Z",
+      "timestamp": "2026-07-11T17:41:00Z",
       "service": "checkout-api",
       "p99_latency_ms": 381.1,
       "error_rate_pct": 0.07,
@@ -24,7 +24,7 @@
       "phase": "baseline"
     },
     {
-      "timestamp": "2026-07-11T07:58:00Z",
+      "timestamp": "2026-07-11T17:42:00Z",
       "service": "checkout-api",
       "p99_latency_ms": 366.9,
       "error_rate_pct": 0.092,
@@ -34,7 +34,7 @@
       "phase": "baseline"
     },
     {
-      "timestamp": "2026-07-11T07:59:00Z",
+      "timestamp": "2026-07-11T17:43:00Z",
       "service": "checkout-api",
       "p99_latency_ms": 327.9,
       "error_rate_pct": 0.069,
@@ -44,7 +44,7 @@
       "phase": "baseline"
     },
     {
-      "timestamp": "2026-07-11T08:00:00Z",
+      "timestamp": "2026-07-11T17:44:00Z",
       "service": "checkout-api",
       "p99_latency_ms": 384.6,
       "error_rate_pct": 0.046,
@@ -54,7 +54,7 @@
       "phase": "baseline"
     },
     {
-      "timestamp": "2026-07-11T08:01:00Z",
+      "timestamp": "2026-07-11T17:45:00Z",
       "service": "checkout-api",
       "p99_latency_ms": 390.5,
       "error_rate_pct": 0.037,
@@ -64,7 +64,7 @@
       "phase": "baseline"
     },
     {
-      "timestamp": "2026-07-11T08:02:00Z",
+      "timestamp": "2026-07-11T17:46:00Z",
       "service": "checkout-api",
       "p99_latency_ms": 387.1,
       "error_rate_pct": 0.031,
@@ -74,7 +74,7 @@
       "phase": "baseline"
     },
     {
-      "timestamp": "2026-07-11T08:03:00Z",
+      "timestamp": "2026-07-11T17:47:00Z",
       "service": "checkout-api",
       "p99_latency_ms": 358.1,
       "error_rate_pct": 0.045,
@@ -84,7 +84,7 @@
       "phase": "baseline"
     },
     {
-      "timestamp": "2026-07-11T08:04:00Z",
+      "timestamp": "2026-07-11T17:48:00Z",
       "service": "checkout-api",
       "p99_latency_ms": 436.2,
       "error_rate_pct": 0.125,
@@ -94,7 +94,7 @@
       "phase": "climbing"
     },
     {
-      "timestamp": "2026-07-11T08:05:00Z",
+      "timestamp": "2026-07-11T17:49:00Z",
       "service": "checkout-api",
       "p99_latency_ms": 515.1,
       "error_rate_pct": 0.581,
@@ -104,7 +104,7 @@
       "phase": "climbing"
     },
     {
-      "timestamp": "2026-07-11T08:06:00Z",
+      "timestamp": "2026-07-11T17:50:00Z",
       "service": "checkout-api",
       "p99_latency_ms": 611.2,
       "error_rate_pct": 0.828,
@@ -114,7 +114,7 @@
       "phase": "climbing"
     },
     {
-      "timestamp": "2026-07-11T08:07:00Z",
+      "timestamp": "2026-07-11T17:51:00Z",
       "service": "checkout-api",
       "p99_latency_ms": 758.8,
       "error_rate_pct": 1.704,
@@ -124,7 +124,7 @@
       "phase": "climbing"
     },
     {
-      "timestamp": "2026-07-11T08:08:00Z",
+      "timestamp": "2026-07-11T17:52:00Z",
       "service": "checkout-api",
       "p99_latency_ms": 909.5,
       "error_rate_pct": 2.224,
@@ -134,7 +134,7 @@
       "phase": "climbing"
     },
     {
-      "timestamp": "2026-07-11T08:09:00Z",
+      "timestamp": "2026-07-11T17:53:00Z",
       "service": "checkout-api",
       "p99_latency_ms": 1019.3,
       "error_rate_pct": 2.553,
@@ -144,7 +144,7 @@
       "phase": "climbing"
     },
     {
-      "timestamp": "2026-07-11T08:10:00Z",
+      "timestamp": "2026-07-11T17:54:00Z",
       "service": "checkout-api",
       "p99_latency_ms": 1108.3,
       "error_rate_pct": 2.978,
@@ -154,7 +154,7 @@
       "phase": "climbing"
     },
     {
-      "timestamp": "2026-07-11T08:11:00Z",
+      "timestamp": "2026-07-11T17:55:00Z",
       "service": "checkout-api",
       "p99_latency_ms": 1220.9,
       "error_rate_pct": 3.679,
@@ -164,7 +164,7 @@
       "phase": "climbing"
     },
     {
-      "timestamp": "2026-07-11T08:12:00Z",
+      "timestamp": "2026-07-11T17:56:00Z",
       "service": "checkout-api",
       "p99_latency_ms": 1333.2,
       "error_rate_pct": 3.976,
@@ -174,7 +174,7 @@
       "phase": "climbing"
     },
     {
-      "timestamp": "2026-07-11T08:13:00Z",
+      "timestamp": "2026-07-11T17:57:00Z",
       "service": "checkout-api",
       "p99_latency_ms": 1531.8,
       "error_rate_pct": 4.182,
@@ -184,7 +184,7 @@
       "phase": "climbing"
     },
     {
-      "timestamp": "2026-07-11T08:14:00Z",
+      "timestamp": "2026-07-11T17:58:00Z",
       "service": "checkout-api",
       "p99_latency_ms": 1566.9,
       "error_rate_pct": 4.81,
@@ -194,7 +194,7 @@
       "phase": "climbing"
     },
     {
-      "timestamp": "2026-07-11T08:15:00Z",
+      "timestamp": "2026-07-11T17:59:00Z",
       "service": "checkout-api",
       "p99_latency_ms": 1733.1,
       "error_rate_pct": 5.459,
@@ -204,7 +204,7 @@
       "phase": "climbing"
     },
     {
-      "timestamp": "2026-07-11T08:16:00Z",
+      "timestamp": "2026-07-11T18:00:00Z",
       "service": "checkout-api",
       "p99_latency_ms": 1716.6,
       "error_rate_pct": 6.512,
@@ -214,7 +214,7 @@
       "phase": "plateau"
     },
     {
-      "timestamp": "2026-07-11T08:17:00Z",
+      "timestamp": "2026-07-11T18:01:00Z",
       "service": "checkout-api",
       "p99_latency_ms": 1791.3,
       "error_rate_pct": 6.32,
@@ -224,7 +224,7 @@
       "phase": "plateau"
     },
     {
-      "timestamp": "2026-07-11T08:18:00Z",
+      "timestamp": "2026-07-11T18:02:00Z",
       "service": "checkout-api",
       "p99_latency_ms": 1842.9,
       "error_rate_pct": 6.329,
@@ -234,7 +234,7 @@
       "phase": "plateau"
     },
     {
-      "timestamp": "2026-07-11T08:19:00Z",
+      "timestamp": "2026-07-11T18:03:00Z",
       "service": "checkout-api",
       "p99_latency_ms": 1754.8,
       "error_rate_pct": 5.98,
@@ -244,7 +244,7 @@
       "phase": "plateau"
     },
     {
-      "timestamp": "2026-07-11T08:20:00Z",
+      "timestamp": "2026-07-11T18:04:00Z",
       "service": "checkout-api",
       "p99_latency_ms": 1728.8,
       "error_rate_pct": 6.641,
@@ -254,7 +254,7 @@
       "phase": "plateau"
     },
     {
-      "timestamp": "2026-07-11T08:21:00Z",
+      "timestamp": "2026-07-11T18:05:00Z",
       "service": "checkout-api",
       "p99_latency_ms": 1789.9,
       "error_rate_pct": 6.054,
