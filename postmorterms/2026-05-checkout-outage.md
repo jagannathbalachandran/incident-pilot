@@ -7,7 +7,7 @@ tags: [postmortem, checkout-api, connection pool exhaustion]
 date: 2026-05-14
 duration_minutes: 47
 customer_impact: "~9% of checkout attempts failed or timed out between 14:02 and 14:49 UTC"
-related_runbooks: ["checkout-api-high-latency.md"]
+related_runbooks: ["checkout-api-runbook.md"]
 related_github_issues: ["org/checkout-api#412", "org/checkout-api#415"]
 ---
 
