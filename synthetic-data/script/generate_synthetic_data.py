@@ -164,8 +164,8 @@ def build_incident(service, label, start, total_minutes, incident_start, inciden
     logs = derive_app_logs(metrics, service)
     validate_alignment(metrics, logs)
 
-    metrics_path = f"metrics/{service}-{label}-metrics.json"
-    logs_path = f"logs/{service}-{label}-app-logs.jsonl"
+    metrics_path = os.path.join(DATA_DIR, "metrics", f"{service}-{label}-metrics.json")
+    logs_path = os.path.join(DATA_DIR, "logs", f"{service}-{label}-app-logs.jsonl")
 
     with open(metrics_path, "w") as f:
         json.dump({
