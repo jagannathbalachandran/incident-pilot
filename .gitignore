@@ -6,3 +6,5 @@ build/
 .env
 __pycache__/
 *.pyc
+.venv/
+synthetic-data/vectorstore/

@@ -1,4 +1,11 @@
 langchain-groq
 langchain-core
+langchain-chroma
+langchain-text-splitters
+langchain-huggingface
+chromadb
+sentence-transformers==3.0.1
+transformers==4.44.0
+numpy<2
 python-dotenv
 pytest
