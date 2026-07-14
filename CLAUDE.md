@@ -27,8 +27,8 @@ Re-running overwrites both files. The script validates metric/log alignment at t
 
 | Directory | Contents |
 |---|---|
-| `runbooks/` | Service runbooks for RAG indexing — one file per service |
-| `postmorterms/` | Past-incident postmortems for RAG indexing |
+| `synthetic-data/runbooks/` | Service runbooks for RAG indexing — one file per service |
+| `synthetic-data/postmorterms/` | Past-incident postmortems for RAG indexing |
 | `synthetic-data/metrics/` | JSON time-series metrics for the log/metrics query tool |
 | `synthetic-data/logs/` | JSONL application logs, aligned with metrics by construction |
 | `docs/` | Generation prompts and team context |
@@ -44,7 +44,7 @@ Re-running overwrites both files. The script validates metric/log alignment at t
 
 **Before adding a new postmortem**, read `docs/POSTMORTEM_GENERATION_PROMPT.md`. Key constraints:
 - Title by symptom/impact, not root cause.
-- `related_runbooks` must use the exact filename that exists in `runbooks/`.
+- `related_runbooks` must use the exact filename that exists in `synthetic-data/runbooks/`.
 - The `tags` root-cause phrase must match the exact phrase used in the corresponding runbook's Known Issue heading.
 - No "key excerpts for retrieval" section — that's the memory layer's job, populated from real sessions.
 - Action items table: max 2 rows, each independently verifiable against the rest of the corpus.
@@ -82,12 +82,14 @@ Re-running overwrites both files. The script validates metric/log alignment at t
 │  │ every query)    │   │  ┌────────────┐  │   │  past-        │  │
 │  │                 │   │  │ Embedded   │  │   │  incident     │  │
 │  │ Blocks: deploy, │   │  │ chunks of  │  │   │  records)     │  │
-│  │ rollback,       │   │  │ runbooks/  │  │   │               │  │
-│  │ hotfix, any     │   │  │ postmortem │  │   │  Reads:       │  │
-│  │ production-     │   │  │ s/         │  │   │  incident     │  │
-│  │ mutating action │   │  └────────────┘  │   │  records from │  │
-│  └─────────────────┘   └──────────────────┘   │  prior        │  │
-│                                                │  sessions     │  │
+│  │ rollback,       │   │  │ synthetic- │  │   │               │  │
+│  │ hotfix, any     │   │  │ data/      │  │   │  Reads:       │  │
+│  │ production-     │   │  │ runbooks/  │  │   │  incident     │  │
+│  │ mutating action │   │  │ postmortem │  │   │  records from │  │
+│  └─────────────────┘   │  │ s/         │  │   │  prior        │  │
+│                         │  └────────────┘  │   │  sessions     │  │
+│                         └──────────────────┘   │               │  │
+│                                                └───────────────┘  │
 │  ┌──────────────────────────────────────────┐  └───────────────┘  │
 │  │  Tools (exposed via MCP)                 │                     │
 │  │                                          │                     │
@@ -113,7 +115,7 @@ Re-running overwrites both files. The script validates metric/log alignment at t
 
 | Component | Reads from | Writes to |
 |---|---|---|
-| RAG ingestion pipeline | `runbooks/*.md`, `postmorterms/*.md` | Vector store (in-memory or persistent) |
+| RAG ingestion pipeline | `synthetic-data/runbooks/*.md`, `synthetic-data/postmorterms/*.md` | Vector store (in-memory or persistent) |
 | RAG retrieval | Vector store | — |
 | `query_logs` tool | `synthetic-data/logs/*.jsonl`, `synthetic-data/metrics/*.json` | Cache |
 | Cache | Cache store | Cache store |
@@ -140,7 +142,7 @@ Alex types query
         ▼
 3. RAG RETRIEVAL
    Embed the query → cosine search over Vector Store
-   └── Returns: top-k chunks from runbooks/ and postmorterms/
+   └── Returns: top-k chunks from synthetic-data/runbooks/ and synthetic-data/postmorterms/
         │        (each chunk tagged: source file + section header)
         ▼
 4. TOOL CALLS (agent decides which, if any, are needed)

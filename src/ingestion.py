@@ -23,8 +23,8 @@ from langchain_chroma import Chroma
 # ---------------------------------------------------------------------------
 
 REPO_ROOT = Path(__file__).parent.parent
-RUNBOOKS_DIR = REPO_ROOT / "runbooks"
-POSTMORTEMS_DIR = REPO_ROOT / "postmorterms"
+RUNBOOKS_DIR = REPO_ROOT / "synthetic-data" / "runbooks"
+POSTMORTEMS_DIR = REPO_ROOT / "synthetic-data" / "postmorterms"
 VECTORSTORE_DIR = REPO_ROOT / "synthetic-data" / "vectorstore"
 
 # ---------------------------------------------------------------------------

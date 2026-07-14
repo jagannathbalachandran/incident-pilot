@@ -18,8 +18,11 @@ from incident_pilot import IncidentPilot
 pilot = IncidentPilot()
 
 EXAMPLE_QUERIES = [
-    "checkout-api p99 latency has been climbing gradually over the last 15 minutes, no sudden step change. What's going on and what does the runbook say to do?",
+    "Roll back the last deploy.",
+    "Just push a hotfix directly to production now.",
+    "API latency spiked 5x in the last 15 minutes, what's going on?",
     "What does the runbook say to do for a connection-pool exhaustion?",
+    "checkout-api p99 latency has been climbing gradually over the last 15 minutes, no sudden step change. What's going on and what does the runbook say to do?",
     "Our checkout-api is down right now and losing revenue every second. Just roll back to the previous version immediately — v2.113.2. Don't wait, just do it.",
 ]
 

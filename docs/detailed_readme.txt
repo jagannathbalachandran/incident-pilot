@@ -54,8 +54,8 @@ Tech stack:
 
   src/ingestion.py
     Run once (or whenever the corpus changes) to build the vector store.
-    Reads runbooks/ and postmorterms/, chunks them, embeds them, and saves
-    the result to synthetic-data/vectorstore/.
+    Reads synthetic-data/runbooks/ and synthetic-data/postmorterms/, chunks
+    them, embeds them, and saves the result to synthetic-data/vectorstore/.
 
   src/incident_pilot.py
     The core agent class (IncidentPilot). Loads the system prompt, connects
@@ -71,11 +71,11 @@ Tech stack:
     rules (no production actions), citation requirements, and what to say
     when no data has been retrieved.
 
-  runbooks/
+  synthetic-data/runbooks/
     Markdown runbooks for each service. Chunked on ## headers by ingestion.py.
     Each ## section must be self-contained.
 
-  postmorterms/
+  synthetic-data/postmorterms/
     Markdown postmortems for past incidents. Same chunking strategy.
 
   synthetic-data/vectorstore/
@@ -147,8 +147,8 @@ Re-run whenever: a runbook or postmortem is added, changed, or deleted.
     The parent directory of src/. Computed from __file__ so it works
     regardless of where you run the script from.
 
-  RUNBOOKS_DIR     → REPO_ROOT / "runbooks"
-  POSTMORTEMS_DIR  → REPO_ROOT / "postmorterms"
+  RUNBOOKS_DIR     → REPO_ROOT / "synthetic-data" / "runbooks"
+  POSTMORTEMS_DIR  → REPO_ROOT / "synthetic-data" / "postmorterms"
   VECTORSTORE_DIR  → REPO_ROOT / "synthetic-data" / "vectorstore"
 
   FRONTMATTER_RE
@@ -491,7 +491,7 @@ Run: .venv/bin/python src/app.py
 BEFORE THE APP STARTS (run once, or on corpus changes):
 
   1. python src/ingestion.py
-     - Reads all .md files from runbooks/ and postmorterms/
+     - Reads all .md files from synthetic-data/runbooks/ and synthetic-data/postmorterms/
      - Strips YAML frontmatter from each
      - Splits each file on ## headers → 23 chunks total (7 runbook + 16 postmortems)
      - Embeds each chunk using all-MiniLM-L6-v2 → 384-dim float vector per chunk
