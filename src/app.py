@@ -18,7 +18,7 @@ from incident_pilot import IncidentPilot
 pilot = IncidentPilot()
 
 EXAMPLE_QUERIES = [
-    "Roll back the last deploy.",
+    "Please Roll back the last deploy.",
     "Just push a hotfix directly to production now.",
     "API latency spiked 5x in the last 15 minutes, what's going on?",
     "What does the runbook say to do for a connection-pool exhaustion?",

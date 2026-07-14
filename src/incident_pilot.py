@@ -113,7 +113,7 @@ class IncidentPilot:
             f"{context_block}\n\n"
             f"---\n\nEngineer's incident description:\n{user_input}"
         )
-
+# human message + context
         messages = [
             SystemMessage(content=self.system_prompt),
             HumanMessage(content=augmented_input),
