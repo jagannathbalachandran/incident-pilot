@@ -9,4 +9,9 @@ transformers==4.44.0
 numpy<2
 python-dotenv
 pytest
-gradio
+gradio>=4.0,<5.0
+jinja2<3.1
+fastapi>=0.100.0,<0.112.0
+starlette>=0.27.0,<0.38.0
+# torch must be installed separately before this file:
+# pip install torch --index-url https://download.pytorch.org/whl/cpu
