@@ -1,10 +1,23 @@
 """
-Ingestion pipeline — Week 1, Task 6.
+Ingestion pipeline.
 
-Loads runbooks and postmortems, strips YAML frontmatter, splits on ## headers,
-embeds with HuggingFace all-MiniLM-L6-v2, and writes a persistent ChromaDB
-vector store. Deletes and recreates the store on every run so it always
-reflects the current state of the corpus.
+PDF corpus (synthetic-data/real-runbooks/) and postmortems
+(synthetic-data/postmorterms/):
+  Both are treated as heterogeneous enterprise documents of unknown format
+  (today postmortems happen to be markdown, but the pipeline doesn't assume
+  that — a real org's postmortems could just as easily be PDFs or Word
+  exports). Both are chunked with SemanticChunker, which embeds sentences and
+  splits where meaning shifts significantly. No format-specific code. Works
+  for any document in any format without configuration.
+
+  Safety net: any chunk exceeding MAX_CHUNK_CHARS is further split by
+  RecursiveCharacterTextSplitter to stay within the embedding model's
+  token limit (all-MiniLM-L6-v2 max: 256 tokens ≈ 1000 chars).
+
+  The embedding model is created once and shared between SemanticChunker
+  and ChromaDB to avoid loading it twice.
+
+synthetic-data/runbooks/ is not currently indexed.
 
 Usage:
     python src/ingestion.py
@@ -14,7 +27,9 @@ import re
 import shutil
 from pathlib import Path
 
-from langchain_text_splitters import MarkdownHeaderTextSplitter
+from langchain_core.documents import Document
+from langchain_experimental.text_splitter import SemanticChunker
+from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_chroma import Chroma
 
@@ -23,12 +38,16 @@ from langchain_chroma import Chroma
 # ---------------------------------------------------------------------------
 
 REPO_ROOT = Path(__file__).parent.parent
-RUNBOOKS_DIR = REPO_ROOT / "synthetic-data" / "runbooks"
-POSTMORTEMS_DIR = REPO_ROOT / "synthetic-data" / "postmorterms"
-VECTORSTORE_DIR = REPO_ROOT / "synthetic-data" / "vectorstore"
+POSTMORTEMS_DIR    = REPO_ROOT / "synthetic-data" / "postmorterms"
+REAL_RUNBOOKS_DIR  = REPO_ROOT / "synthetic-data" / "real-runbooks"
+VECTORSTORE_DIR    = REPO_ROOT / "synthetic-data" / "vectorstore"
+
+# Chunks exceeding this length get a secondary split so they stay within the
+# embedding model's token limit.
+MAX_CHUNK_CHARS = 1500
 
 # ---------------------------------------------------------------------------
-# Helpers
+# Markdown helpers
 # ---------------------------------------------------------------------------
 
 FRONTMATTER_RE = re.compile(r"^---\n.*?\n---\n", re.DOTALL)
@@ -39,8 +58,8 @@ def strip_frontmatter(text: str) -> str:
     return FRONTMATTER_RE.sub("", text).strip()
 
 
-def load_documents(directories: list[Path]) -> list[tuple[str, str]]:
-    """Return (source_filename, content) for every .md file in the given dirs."""
+def load_markdown_documents(directories: list[Path]) -> list[tuple[str, str]]:
+    """Return (filename, content) for every .md file in the given directories."""
     docs = []
     for directory in directories:
         for path in sorted(directory.glob("*.md")):
@@ -50,40 +69,121 @@ def load_documents(directories: list[Path]) -> list[tuple[str, str]]:
 
 
 # ---------------------------------------------------------------------------
+# PDF extraction
+# ---------------------------------------------------------------------------
+
+def extract_pdf_text(path: Path) -> str:
+    """Extract plain text from a PDF, page by page, joined with blank lines."""
+    import pdfplumber
+    pages = []
+    with pdfplumber.open(path) as pdf:
+        for page in pdf.pages:
+            text = page.extract_text()
+            if text and text.strip():
+                pages.append(text.strip())
+    return "\n\n".join(pages)
+
+
+# ---------------------------------------------------------------------------
+# Semantic chunking (format-agnostic — used for PDFs and postmortems alike)
+# ---------------------------------------------------------------------------
+
+def _safety_split(chunks: list[Document]) -> list[Document]:
+    """
+    Secondary pass: split any chunk that exceeds MAX_CHUNK_CHARS.
+    Splits at paragraph → sentence → word boundaries, never mid-sentence.
+    Preserves all metadata from the parent chunk.
+    """
+    splitter = RecursiveCharacterTextSplitter(
+        chunk_size=MAX_CHUNK_CHARS,
+        chunk_overlap=100,
+        separators=["\n\n", "\n", ". ", " "],
+    )
+    result = []
+    for doc in chunks:
+        if len(doc.page_content) <= MAX_CHUNK_CHARS:
+            result.append(doc)
+        else:
+            result.extend(splitter.split_documents([doc]))
+    return result
+
+
+def semantic_chunk_text(
+    text: str,
+    source: str,
+    embeddings: HuggingFaceEmbeddings,
+) -> list[Document]:
+    """
+    Chunk a document's plain text using semantic similarity.
+
+    SemanticChunker embeds every sentence and finds points where the meaning
+    shifts significantly (95th percentile of all pairwise distances in the
+    document). No knowledge of the document's format is required — the same
+    function handles ISTM tables, formal numbered templates, prose-style docs,
+    markdown postmortems, and any other format without configuration.
+
+    The embeddings object is passed in (not created here) so the caller can
+    reuse the same model instance for both chunking and the vector store.
+    """
+    chunker = SemanticChunker(
+        embeddings,
+        breakpoint_threshold_type="percentile",
+        breakpoint_threshold_amount=95,
+    )
+    chunks = chunker.create_documents([text])
+    for chunk in chunks:
+        # Use the first non-empty line as a human-readable section label.
+        first_line = next(
+            (line.strip() for line in chunk.page_content.split("\n") if line.strip()),
+            "unknown",
+        )
+        chunk.metadata["source"] = source
+        chunk.metadata["section"] = first_line[:80]
+        chunk.metadata["format"] = "semantic"
+
+    return _safety_split(chunks)
+
+
+# ---------------------------------------------------------------------------
 # Pipeline
 # ---------------------------------------------------------------------------
 
 def build_vectorstore() -> Chroma:
-    # 1. Wipe and recreate the vector store directory
+    # 1. Wipe and recreate
     if VECTORSTORE_DIR.exists():
         shutil.rmtree(VECTORSTORE_DIR)
         print(f"Deleted existing vector store at {VECTORSTORE_DIR}")
     VECTORSTORE_DIR.mkdir(parents=True)
 
-    # 2. Load and chunk documents
-    splitter = MarkdownHeaderTextSplitter(
-        headers_to_split_on=[("##", "section")],
-        strip_headers=False,
-    )
-
-    all_chunks = []
-    for source, content in load_documents([RUNBOOKS_DIR, POSTMORTEMS_DIR]):
-        chunks = splitter.split_text(content)
-        for chunk in chunks:
-            chunk.metadata["source"] = source
-        all_chunks.extend(chunks)
-        print(f"  {source}: {len(chunks)} chunks")
-
-    print(f"\nTotal chunks: {len(all_chunks)}")
-
-    # 3. Embed
+    # 2. Create embedding model once — shared by SemanticChunker and ChromaDB
     print("\nLoading embedding model (all-MiniLM-L6-v2)...")
     embeddings = HuggingFaceEmbeddings(
         model_name="all-MiniLM-L6-v2",
         model_kwargs={"device": "cpu"},
     )
 
-    # 4. Build and persist ChromaDB
+    all_chunks: list[Document] = []
+
+    # 3. PDF corpus — semantic chunking, format-agnostic
+    print("\nPDF corpus (semantic chunking):")
+    if REAL_RUNBOOKS_DIR.exists():
+        for path in sorted(REAL_RUNBOOKS_DIR.glob("*.pdf")):
+            text = extract_pdf_text(path)
+            chunks = semantic_chunk_text(text, path.name, embeddings)
+            all_chunks.extend(chunks)
+            print(f"  {path.name}: {len(chunks)} chunks [semantic]")
+
+    # 4. Postmortems — same semantic chunking, treated as format-agnostic too
+    print("\nPostmortem corpus (semantic chunking):")
+    if POSTMORTEMS_DIR.exists():
+        for filename, content in load_markdown_documents([POSTMORTEMS_DIR]):
+            chunks = semantic_chunk_text(content, filename, embeddings)
+            all_chunks.extend(chunks)
+            print(f"  {filename}: {len(chunks)} chunks [semantic]")
+
+    print(f"\nTotal chunks: {len(all_chunks)}")
+
+    # 5. Build and persist ChromaDB using the same embeddings instance
     print("Building ChromaDB vector store...")
     vectorstore = Chroma.from_documents(
         documents=all_chunks,
@@ -102,8 +202,9 @@ def query_vectorstore(vectorstore: Chroma, query: str, k: int = 3) -> None:
     for i, doc in enumerate(results, 1):
         source = doc.metadata.get("source", "unknown")
         section = doc.metadata.get("section", "unknown")
-        print(f"\n--- Result {i} | {source} | {section} ---")
-        print(doc.page_content[:600])
+        fmt = doc.metadata.get("format", "unknown")
+        print(f"\n--- Result {i} | {source} | {section} | [{fmt}] ---")
+        print(doc.page_content)
 
 
 # ---------------------------------------------------------------------------
@@ -111,7 +212,8 @@ def query_vectorstore(vectorstore: Chroma, query: str, k: int = 3) -> None:
 # ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
-    print("=== IncidentPilot Ingestion Pipeline ===\n")
-    print("Chunking documents:")
+    print("=== IncidentPilot Ingestion Pipeline ===")
     vectorstore = build_vectorstore()
-    query_vectorstore(vectorstore, "connection pool exhaustion")
+    query_vectorstore(vectorstore, "connection pool exhaustion in checkout service")
+    query_vectorstore(vectorstore, "high latency in checkout service")
+    query_vectorstore(vectorstore, "error in add to cart service")

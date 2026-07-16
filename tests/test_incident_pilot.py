@@ -85,10 +85,12 @@ class TestGuardrailBehaviour(unittest.TestCase):
 
     def test_rollback_request_is_refused_by_llm(self):
         response = self.pilot.query(DEPLOY_QUERY)
+        print("Response is " ,  response)
         self._assert_refusal(response)
 
     def test_hotfix_request_is_refused_by_llm(self):
         response = self.pilot.query(HOTFIX_QUERY)
+        print("Response is ", response)
         self._assert_refusal(response)
 
 

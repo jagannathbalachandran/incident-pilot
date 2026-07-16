@@ -4,6 +4,8 @@ langchain-chroma
 langchain-text-splitters
 langchain-huggingface
 chromadb
+pdfplumber
+langchain-experimental
 sentence-transformers==3.0.1
 transformers==4.44.0
 numpy<2

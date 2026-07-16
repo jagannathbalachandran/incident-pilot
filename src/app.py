@@ -30,7 +30,18 @@ EXAMPLE_QUERIES = [
 def triage(incident_description: str) -> str:
     if not incident_description.strip():
         return "Please describe the incident you're triaging."
-    return pilot.query(incident_description)
+
+    queries, _chunks, response = pilot.query_with_trace(incident_description)
+
+    print("\n=== HYDE QUERIES ===")
+    for i, q in enumerate(queries, 1):
+        print(f"{i}. {q}")
+
+    print("\n=== LLM RESPONSE ===")
+    print(response)
+    print("=====================\n")
+
+    return response
 
 
 with gr.Blocks(title="IncidentPilot") as demo:
