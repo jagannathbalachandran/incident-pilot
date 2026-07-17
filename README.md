@@ -1,92 +1,116 @@
-# incident-pilot
-incident-pilot helps an on-call engineer triage production issues using RAG over runbooks, postmortems, and code documentation, queries logs/metrics and opens GitHub issues via tools, and recalls similar past incidents and their fixes using memory; while requiring explicit human approval before ever suggesting a deploy or rollback action be executed.
+# IncidentPilot
 
-## Prerequisites
+AI-powered incident-response copilot for on-call SRE engineers. Uses RAG over runbooks/postmortems, queries live Prometheus/Loki metrics and logs, analyzes log patterns, detects contradictions between live data and engineer's description, and returns cited triage summaries — all while **refusing to execute any deploy, rollback, or production-mutating action** without explicit human approval.
 
-Before cloning, make sure you have the following installed on your machine:
-
-**Python 3.11**
-PyTorch (used for embeddings) does not have wheels for Python 3.13. Python 3.11 is required.
-
-- macOS (Homebrew): `brew install python@3.11`
-- Linux: `sudo apt install python3.11 python3.11-venv`
-- Windows: download from [python.org/downloads](https://www.python.org/downloads/release/python-3119/)
-
-Verify: `python3.11 --version` should print `Python 3.11.x`
-
-**Groq API key**
-The LLM runs on [Groq](https://console.groq.com). Create a free account and generate an API key at [console.groq.com/keys](https://console.groq.com/keys).
-
-**Git**
-`git --version` — install from [git-scm.com](https://git-scm.com) if missing.
+> **📖 Single reference:** See [`docs/walkthrough-log.md`](docs/walkthrough-log.md) for the complete E2E walkthrough, LLM integration guide, log tracing, and step-by-step usage — all in one document.
 
 ---
 
-## Setup
+## Key Features
 
-**1. Clone and enter the repo**
-```bash
-git clone <repo-url>
-cd incident-pilot
+- **RAG-grounded triage** — retrieves relevant runbook/postmortem sections from ChromaDB
+- **Live data** — queries Prometheus metrics + Loki logs (with automatic static-file fallback)
+- **Log analysis** — structured summaries (levels, patterns, error clusters), not raw line dumps
+- **Contradiction detection** — code-level + prompt-level checks that flag when live data contradicts the engineer's description
+- **Request-ID tracing** — every query and API call gets a unique ID that flows through all logs (Gradio, Docker, Loki)
+- **Guardrails** — unconditional refusal of deploy/rollback/hotfix requests, even if RAG or data sources fail
+- **Trace panel** — expandable UI panel showing exactly what the agent saw (RAG chunks, metrics, log analysis, full prompt)
+- **Three incident scenarios** — pool exhaustion, cache failover, fraud outage (real-time simulation)
+
+---
+
+## Architecture Overview
+
+```
+┌─ Host Machine ───────────────────────────────┐
+│                                                │
+│  Gradio UI (:7860) → IncidentPilot Agent       │
+│                          ├─ ChromaDB (RAG)     │
+│                          ├─ Prometheus (:9090) │
+│                          └─ Loki (:3100)       │
+│                                                │
+└──────────────────┬─────────────────────────────┘
+                   │ HTTP
+┌─ Docker Stack ───▼─────────────────────────────┐
+│                                                │
+│  Flask Generator (:5001) ──→ Prometheus (:9090) │
+│       │ stdout / HTTP push ──→ Loki (:3100)    │
+│                                                │
+│  Grafana (:3000) ←── Prometheus + Loki         │
+│                                                │
+└────────────────────────────────────────────────┘
 ```
 
-**2. Create a Python 3.11 virtual environment and install dependencies**
+---
 
-PyTorch (required for embeddings) does not have wheels for Python 3.13. Use Python 3.11:
+## Stack
+
+| Component | Technology | Port |
+|---|---|---|
+| AI Agent | Python + LangChain + ChatGroq | — |
+| Embeddings | HuggingFace `all-MiniLM-L6-v2` | — |
+| Vector Store | ChromaDB | — |
+| UI | Gradio 4.x | `7860` |
+| Incident Simulator | Flask (Docker) | `5001` |
+| Metrics | Prometheus (Docker) | `9090` |
+| Logs | Loki (Docker) | `3100` |
+| Dashboards | Grafana (Docker) | `3000` |
+
+---
+
+## Quick Start
+
 ```bash
+# 1. Setup
 python3.11 -m venv .venv
 source .venv/bin/activate
 pip install torch --index-url https://download.pytorch.org/whl/cpu
 pip install -r requirements.txt
-```
 
-**3. Configure your API key**
+# 2. API key
+cp .env.example .env   # Add GROQ_API_KEY=your_key_here
 
-Copy the example env file and fill in your [Groq API key](https://console.groq.com/keys):
-```bash
-cp .env.example .env
-```
-Then open `.env` and replace the placeholder:
-```
-GROQ_API_KEY=your_groq_api_key_here
-```
-Export it in your shell before running anything:
-```bash
-export GROQ_API_KEY=$(grep GROQ_API_KEY .env | cut -d= -f2)
-```
-
-## Running the agent
-
-**Test the system prompt (guardrail verification):**
-```bash
-.venv/bin/python src/incident_pilot.py
-```
-This fires two queries that attempt a rollback and a hotfix. Both should be refused.
-
-**Build the RAG vector store:**
-```bash
+# 3. Build RAG vector store
 .venv/bin/python src/ingestion.py
-```
-Deletes and recreates `synthetic-data/vectorstore/` from the current corpus. Run this whenever runbooks or postmortems change. Prints chunk count per document and top 3 results for a test query.
 
-**Regenerate synthetic log/metrics data:**
-```bash
-cd synthetic-data/script
-.venv/bin/python generate_synthetic_data.py
+# 4. Start monitoring stack
+docker compose up -d
+
+# 5. Trigger an incident and test the agent
+curl -X POST http://localhost:5001/api/incidents/pool/trigger
+.venv/bin/python src/incident_pilot.py
+
+# 6. Launch the Gradio UI
+cd src && TOKENIZERS_PARALLELISM=false ../.venv/bin/python app.py
+# Open http://127.0.0.1:7860
 ```
 
-## Running the tests
+---
+
+## Testing
 
 ```bash
 .venv/bin/python -m pytest tests/ -v
+# 67 tests: guardrails (2 real LLM) + structure (5) + contradiction detection (17) + data layer (43)
 ```
 
-Two of the four tests call the real Groq API and require `GROQ_API_KEY` to be set (via `.env` or shell export). The other two are structural and run without it.
+---
 
-## CI
+## Incident Scenarios
 
-Tests run automatically on every push to `main` via GitHub Actions (`.github/workflows/tests.yml`).
+| Scenario | Trigger | Signature |
+|---|---|---|
+| Pool Exhaustion | `POST /api/incidents/pool/trigger` | Latency climbs gradually, connections hit 200, errors appear |
+| Cache Failover | `POST /api/incidents/cache/trigger` | Cache hit drops to 0.41, latency rises, errors stay flat |
+| Fraud Outage | `POST /api/incidents/fraud/trigger` | Error rate spikes to 10-15%, connections normal |
 
-To enable CI on your fork, add `GROQ_API_KEY` as a repository secret:
-**Settings → Secrets and variables → Actions → New repository secret**
+---
 
+## Documentation Map
+
+| Document | What it covers |
+|---|---|
+| [`docs/walkthrough-log.md`](docs/walkthrough-log.md) | **Complete reference** — E2E walkthrough, LLM integration, log tracing, user guide — all merged into one document |
+| [`docs/architecture/high-level-design.md`](docs/architecture/high-level-design.md) | System architecture, design decisions, API spec |
+| [`docs/architecture/low-level-design.md`](docs/architecture/low-level-design.md) | Class diagrams, metric formulas, code structure |
+| [`docs/postman/IncidentPilot.postman_collection.json`](docs/postman/IncidentPilot.postman_collection.json) | Postman collection for all APIs |

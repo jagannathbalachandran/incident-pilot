@@ -1,0 +1,178 @@
+{
+  "title": "Incident Overview",
+  "version": 1,
+  "timezone": "utc",
+  "editable": true,
+  "panels": [
+    {
+      "title": "p99 Latency",
+      "type": "timeseries",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 0},
+      "targets": [
+        {
+          "expr": "checkout_p99_latency_ms{service=\"checkout-api\"}",
+          "legendFormat": "p99 latency (ms)",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {"color": "green", "value": null},
+              {"color": "orange", "value": 1000},
+              {"color": "red", "value": 1500}
+            ]
+          },
+          "min": 0
+        }
+      },
+      "options": {
+        "legend": {"show": true, "placement": "bottom"},
+        "tooltip": {"mode": "multi"}
+      }
+    },
+    {
+      "title": "Error Rate",
+      "type": "timeseries",
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 0},
+      "targets": [
+        {
+          "expr": "checkout_error_rate_pct{service=\"checkout-api\"}",
+          "legendFormat": "error rate (%)",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {"color": "green", "value": null},
+              {"color": "orange", "value": 2},
+              {"color": "red", "value": 5}
+            ]
+          },
+          "min": 0
+        }
+      },
+      "options": {
+        "legend": {"show": true, "placement": "bottom"},
+        "tooltip": {"mode": "multi"}
+      }
+    },
+    {
+      "title": "Active Connections",
+      "type": "timeseries",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 8},
+      "targets": [
+        {
+          "expr": "checkout_active_connections{service=\"checkout-api\"}",
+          "legendFormat": "active",
+          "refId": "A"
+        },
+        {
+          "expr": "checkout_max_connections{service=\"checkout-api\"}",
+          "legendFormat": "max",
+          "refId": "B"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "min": 0,
+          "max": 250,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {"color": "green", "value": null},
+              {"color": "orange", "value": 150},
+              {"color": "red", "value": 190}
+            ]
+          }
+        }
+      },
+      "options": {
+        "legend": {"show": true, "placement": "bottom"},
+        "tooltip": {"mode": "multi"}
+      }
+    },
+    {
+      "title": "Cache Hit Ratio",
+      "type": "timeseries",
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 8},
+      "targets": [
+        {
+          "expr": "checkout_cache_hit_ratio{service=\"checkout-api\"}",
+          "legendFormat": "cache hit ratio",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "min": 0,
+          "max": 1,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {"color": "green", "value": null},
+              {"color": "orange", "value": 0.85},
+              {"color": "red", "value": 0.70}
+            ]
+          }
+        }
+      },
+      "options": {
+        "legend": {"show": true, "placement": "bottom"},
+        "tooltip": {"mode": "multi"}
+      }
+    },
+    {
+      "title": "Errors by Type",
+      "type": "bargauge",
+      "gridPos": {"h": 6, "w": 12, "x": 0, "y": 16},
+      "targets": [
+        {
+          "expr": "sum by (error_type) (rate(checkout_errors_total{service=\"checkout-api\"}[1m]))",
+          "legendFormat": "{{error_type}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "min": 0
+        }
+      },
+      "options": {
+        "orientation": "horizontal",
+        "showThresholdLabels": true,
+        "showThresholdMarkers": true
+      }
+    },
+    {
+      "title": "Recent Error Logs",
+      "type": "logs",
+      "gridPos": {"h": 6, "w": 12, "x": 12, "y": 16},
+      "targets": [
+        {
+          "expr": "{service=\"checkout-api\"} |= \"ERROR\"",
+          "refId": "A"
+        }
+      ],
+      "datasource": "Loki",
+      "options": {
+        "showLabels": false,
+        "showTime": true,
+        "wrapLogMessage": true,
+        "prettifyLogs": true
+      }
+    }
+  ],
+  "schemaVersion": 39,
+  "refresh": "15s"
+}

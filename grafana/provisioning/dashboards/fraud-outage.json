@@ -1,0 +1,85 @@
+{
+  "title": "Fraud Outage",
+  "version": 1,
+  "timezone": "utc",
+  "editable": true,
+  "panels": [
+    {
+      "title": "Error Rate (Fraud Spike)",
+      "type": "timeseries",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 0},
+      "targets": [
+        {
+          "expr": "checkout_error_rate_pct{service=\"checkout-api\"}",
+          "legendFormat": "error rate (%)",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "min": 0,
+          "max": 20,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {"color": "green", "value": null},
+              {"color": "orange", "value": 2},
+              {"color": "red", "value": 8}
+            ]
+          }
+        }
+      }
+    },
+    {
+      "title": "p99 Latency",
+      "type": "timeseries",
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 0},
+      "targets": [
+        {
+          "expr": "checkout_p99_latency_ms{service=\"checkout-api\"}",
+          "legendFormat": "p99 latency (ms)",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms",
+          "min": 0
+        }
+      }
+    },
+    {
+      "title": "Fraud Error Count",
+      "type": "bargauge",
+      "gridPos": {"h": 6, "w": 12, "x": 0, "y": 8},
+      "targets": [
+        {
+          "expr": "sum(rate(checkout_errors_total{service=\"checkout-api\", error_type=\"fraud_svc_unavailable\"}[1m]))",
+          "legendFormat": "fraud errors / sec",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "min": 0
+        }
+      }
+    },
+    {
+      "title": "Fraud Error Logs",
+      "type": "logs",
+      "gridPos": {"h": 6, "w": 12, "x": 12, "y": 8},
+      "targets": [
+        {
+          "expr": "{service=\"checkout-api\"} |= \"fraud-scoring-svc\"",
+          "refId": "A"
+        }
+      ],
+      "datasource": "Loki"
+    }
+  ],
+  "schemaVersion": 39,
+  "refresh": "15s"
+}

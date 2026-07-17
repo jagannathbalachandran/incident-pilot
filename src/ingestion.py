@@ -10,6 +10,7 @@ Usage:
     python src/ingestion.py
 """
 
+import logging
 import re
 import shutil
 from pathlib import Path
@@ -17,6 +18,10 @@ from pathlib import Path
 from langchain_text_splitters import MarkdownHeaderTextSplitter
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_chroma import Chroma
+
+from logging_config import setup_logging
+
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Paths
@@ -46,6 +51,7 @@ def load_documents(directories: list[Path]) -> list[tuple[str, str]]:
         for path in sorted(directory.glob("*.md")):
             text = path.read_text()
             docs.append((path.name, strip_frontmatter(text)))
+            logger.debug("Loaded %s (%d chars)", path.name, len(text))
     return docs
 
 
@@ -54,13 +60,17 @@ def load_documents(directories: list[Path]) -> list[tuple[str, str]]:
 # ---------------------------------------------------------------------------
 
 def build_vectorstore() -> Chroma:
+    logger.info("=== Ingestion Pipeline ===")
+
     # 1. Wipe and recreate the vector store directory
     if VECTORSTORE_DIR.exists():
         shutil.rmtree(VECTORSTORE_DIR)
-        print(f"Deleted existing vector store at {VECTORSTORE_DIR}")
+        logger.info("Deleted existing vector store at %s", VECTORSTORE_DIR)
     VECTORSTORE_DIR.mkdir(parents=True)
+    logger.info("Created fresh vector store directory")
 
     # 2. Load and chunk documents
+    logger.info("Loading and chunking documents...")
     splitter = MarkdownHeaderTextSplitter(
         headers_to_split_on=[("##", "section")],
         strip_headers=False,
@@ -72,38 +82,37 @@ def build_vectorstore() -> Chroma:
         for chunk in chunks:
             chunk.metadata["source"] = source
         all_chunks.extend(chunks)
-        print(f"  {source}: {len(chunks)} chunks")
+        logger.info("  %s: %d chunks", source, len(chunks))
 
-    print(f"\nTotal chunks: {len(all_chunks)}")
+    logger.info("Total chunks: %d", len(all_chunks))
 
     # 3. Embed
-    print("\nLoading embedding model (all-MiniLM-L6-v2)...")
+    logger.info("Loading embedding model (all-MiniLM-L6-v2)...")
     embeddings = HuggingFaceEmbeddings(
         model_name="all-MiniLM-L6-v2",
         model_kwargs={"device": "cpu"},
     )
 
     # 4. Build and persist ChromaDB
-    print("Building ChromaDB vector store...")
+    logger.info("Building ChromaDB vector store...")
     vectorstore = Chroma.from_documents(
         documents=all_chunks,
         embedding=embeddings,
         persist_directory=str(VECTORSTORE_DIR),
     )
-    print(f"Vector store saved to {VECTORSTORE_DIR}")
+    logger.info("Vector store saved to %s (%d chunks indexed)",
+                 VECTORSTORE_DIR, len(all_chunks))
     return vectorstore
 
 
 def query_vectorstore(vectorstore: Chroma, query: str, k: int = 3) -> None:
-    print(f"\n{'='*60}")
-    print(f"Query: \"{query}\"")
-    print(f"{'='*60}")
+    logger.info("Querying vector store: '%s' (k=%d)", query, k)
     results = vectorstore.similarity_search(query, k=k)
     for i, doc in enumerate(results, 1):
         source = doc.metadata.get("source", "unknown")
         section = doc.metadata.get("section", "unknown")
-        print(f"\n--- Result {i} | {source} | {section} ---")
-        print(doc.page_content[:600])
+        logger.info("Result %d | %s | %s", i, source, section)
+        logger.debug("Content: %s...", doc.page_content[:200])
 
 
 # ---------------------------------------------------------------------------
@@ -111,7 +120,7 @@ def query_vectorstore(vectorstore: Chroma, query: str, k: int = 3) -> None:
 # ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
-    print("=== IncidentPilot Ingestion Pipeline ===\n")
-    print("Chunking documents:")
+    setup_logging()
     vectorstore = build_vectorstore()
     query_vectorstore(vectorstore, "connection pool exhaustion")
+    logger.info("Ingestion complete")

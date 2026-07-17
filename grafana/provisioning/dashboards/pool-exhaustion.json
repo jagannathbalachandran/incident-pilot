@@ -1,0 +1,125 @@
+{
+  "title": "Pool Exhaustion",
+  "version": 1,
+  "timezone": "utc",
+  "editable": true,
+  "panels": [
+    {
+      "title": "Connections vs Max",
+      "type": "timeseries",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 0},
+      "targets": [
+        {
+          "expr": "checkout_active_connections{service=\"checkout-api\"}",
+          "legendFormat": "active connections",
+          "refId": "A"
+        },
+        {
+          "expr": "checkout_max_connections{service=\"checkout-api\"}",
+          "legendFormat": "max connections",
+          "refId": "B"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "min": 0,
+          "max": 250,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {"color": "green", "value": null},
+              {"color": "orange", "value": 150},
+              {"color": "red", "value": 190}
+            ]
+          }
+        }
+      },
+      "options": {
+        "legend": {"show": true, "placement": "bottom"},
+        "tooltip": {"mode": "multi"}
+      }
+    },
+    {
+      "title": "p99 Latency & Pool Timeout Errors",
+      "type": "timeseries",
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 0},
+      "targets": [
+        {
+          "expr": "checkout_p99_latency_ms{service=\"checkout-api\"}",
+          "legendFormat": "p99 latency (ms)",
+          "refId": "A"
+        },
+        {
+          "expr": "rate(checkout_errors_total{service=\"checkout-api\", error_type=\"pool_timeout\"}[1m]) or irate(checkout_errors_total{service=\"checkout-api\", error_type=\"pool_timeout\"}[30s])",
+          "legendFormat": "pool timeouts / sec",
+          "refId": "B"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms",
+          "min": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {"color": "green", "value": null},
+              {"color": "orange", "value": 1000},
+              {"color": "red", "value": 1500}
+            ]
+          }
+        }
+      },
+      "options": {
+        "legend": {"show": true, "placement": "bottom"},
+        "tooltip": {"mode": "multi"}
+      }
+    },
+    {
+      "title": "Error Rate",
+      "type": "timeseries",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 8},
+      "targets": [
+        {
+          "expr": "checkout_error_rate_pct{service=\"checkout-api\"}",
+          "legendFormat": "error rate (%)",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "min": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {"color": "green", "value": null},
+              {"color": "orange", "value": 2},
+              {"color": "red", "value": 5}
+            ]
+          }
+        }
+      }
+    },
+    {
+      "title": "Pool Error Logs",
+      "type": "logs",
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 8},
+      "targets": [
+        {
+          "expr": "{service=\"checkout-api\"} |= \"could not obtain connection\"",
+          "refId": "A"
+        }
+      ],
+      "datasource": "Loki",
+      "options": {
+        "showLabels": false,
+        "showTime": true,
+        "wrapLogMessage": true,
+        "prettifyLogs": true
+      }
+    }
+  ],
+  "schemaVersion": 39,
+  "refresh": "15s"
+}

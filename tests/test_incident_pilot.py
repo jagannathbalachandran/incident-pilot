@@ -96,6 +96,160 @@ class TestGuardrailBehaviour(unittest.TestCase):
 # Structural tests (no API call)
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# Contradiction detection unit tests (no API calls)
+# ---------------------------------------------------------------------------
+
+class TestContradictionDetection(unittest.TestCase):
+    """Tests for the code-level contradiction detection logic.
+    These are pure unit tests — no LLM calls, no live data."""
+
+    # --- _parse_live_metrics ---
+
+    def test_parse_live_metrics_extracts_values(self):
+        metrics = [
+            {"metric": {"__name__": "checkout_p99_latency_ms"}, "values": [["1000", "1486.2"]]},
+            {"metric": {"__name__": "checkout_error_rate_pct"}, "values": [["1000", "4.77"]]},
+            {"metric": {"__name__": "checkout_active_connections"}, "values": [["1000", "200"]]},
+        ]
+        result = IncidentPilot._parse_live_metrics(metrics)
+        self.assertAlmostEqual(result["checkout_p99_latency_ms"], 1486.2)
+        self.assertAlmostEqual(result["checkout_error_rate_pct"], 4.77)
+        self.assertEqual(result["checkout_active_connections"], 200.0)
+
+    def test_parse_live_metrics_empty(self):
+        self.assertEqual(IncidentPilot._parse_live_metrics([]), {})
+
+    def test_parse_live_metrics_skips_malformed(self):
+        metrics = [
+            {"metric": {"__name__": "checkout_p99_latency_ms"}, "values": [["1000", "not_a_number"]]},
+            {"metric": {"__name__": "good_metric"}, "values": [["1000", "42"]]},
+        ]
+        result = IncidentPilot._parse_live_metrics(metrics)
+        self.assertNotIn("checkout_p99_latency_ms", result)
+        self.assertEqual(result["good_metric"], 42.0)
+
+    # --- _classify_data ---
+
+    def test_classify_data_pool(self):
+        m = {
+            "checkout_error_rate_pct": 4.8,
+            "checkout_active_connections": 185,
+            "checkout_cache_hit_ratio": 0.94,
+            "checkout_p99_latency_ms": 1500,
+        }
+        self.assertEqual(IncidentPilot._classify_data(m), "pool")
+
+    def test_classify_data_cache(self):
+        m = {
+            "checkout_error_rate_pct": 0.1,
+            "checkout_active_connections": 118,
+            "checkout_cache_hit_ratio": 0.41,
+            "checkout_p99_latency_ms": 950,
+        }
+        self.assertEqual(IncidentPilot._classify_data(m), "cache")
+
+    def test_classify_data_fraud(self):
+        m = {
+            "checkout_error_rate_pct": 12.0,
+            "checkout_active_connections": 118,
+            "checkout_cache_hit_ratio": 0.95,
+            "checkout_p99_latency_ms": 836,
+        }
+        self.assertEqual(IncidentPilot._classify_data(m), "fraud")
+
+    def test_classify_data_normal(self):
+        m = {
+            "checkout_error_rate_pct": 0.05,
+            "checkout_active_connections": 118,
+            "checkout_cache_hit_ratio": 0.95,
+            "checkout_p99_latency_ms": 380,
+        }
+        self.assertEqual(IncidentPilot._classify_data(m), "normal")
+
+    # --- _classify_user_query ---
+
+    def test_classify_query_pool(self):
+        self.assertEqual(
+            IncidentPilot._classify_user_query("connection pool exhausted?"),
+            "pool",
+        )
+
+    def test_classify_query_cache(self):
+        self.assertEqual(
+            IncidentPilot._classify_user_query("is this a cache failover?"),
+            "cache",
+        )
+
+    def test_classify_query_fraud(self):
+        self.assertEqual(
+            IncidentPilot._classify_user_query("fraud scoring service down"),
+            "fraud",
+        )
+
+    def test_classify_query_none(self):
+        self.assertIsNone(
+            IncidentPilot._classify_user_query("latency is high, what's up?"),
+        )
+
+    # --- _build_contradiction_text ---
+
+    def test_contradiction_matching(self):
+        """Data matches query — no contradiction."""
+        self.assertIsNone(
+            IncidentPilot._build_contradiction_text("pool", "pool"),
+        )
+
+    def test_contradiction_normal_data(self):
+        """Data is normal — no contradiction."""
+        self.assertIsNone(
+            IncidentPilot._build_contradiction_text("normal", "cache"),
+        )
+
+    def test_contradiction_no_query_class(self):
+        """No specific incident in query — no contradiction."""
+        self.assertIsNone(
+            IncidentPilot._build_contradiction_text("pool", None),
+        )
+
+    def test_contradiction_mismatch(self):
+        """User asked about cache, data shows pool."""
+        text = IncidentPilot._build_contradiction_text("pool", "cache")
+        self.assertIsNotNone(text)
+        self.assertIn("Contradiction", text)
+        self.assertIn("pool", text.lower())
+        self.assertIn("cache", text.lower())
+
+    # --- _detect_contradictions (lightweight integration) ---
+
+    def test_detect_contradictions_cache_query_with_pool_data(self):
+        """User asks about cache failover but data shows pool exhaustion."""
+        metrics = [
+            {"metric": {"__name__": "checkout_error_rate_pct"}, "values": [["1000", "4.8"]]},
+            {"metric": {"__name__": "checkout_active_connections"}, "values": [["1000", "185"]]},
+            {"metric": {"__name__": "checkout_cache_hit_ratio"}, "values": [["1000", "0.94"]]},
+            {"metric": {"__name__": "checkout_p99_latency_ms"}, "values": [["1000", "1500"]]},
+        ]
+        result = IncidentPilot._detect_contradictions(
+            "cache failover in last hour", {"metrics": metrics}
+        )
+        self.assertIsNotNone(result)
+        self.assertIn("Contradiction", result)
+        self.assertIn("pool", result.lower())
+        self.assertIn("cache", result.lower())
+
+    def test_detect_contradictions_pool_query_with_pool_data(self):
+        """User asks about pool and data shows pool — no contradiction."""
+        metrics = [
+            {"metric": {"__name__": "checkout_error_rate_pct"}, "values": [["1000", "4.8"]]},
+            {"metric": {"__name__": "checkout_active_connections"}, "values": [["1000", "185"]]},
+        ]
+        result = IncidentPilot._detect_contradictions(
+            "connection pool is exhausted", {"metrics": metrics}
+        )
+        self.assertIsNone(result)
+
+
 class TestAgentStructure(unittest.TestCase):
     """Verifies the system prompt is correctly loaded and always sent as the
     first message to the model. No real API call is made here."""
@@ -109,6 +263,35 @@ class TestAgentStructure(unittest.TestCase):
                 keyword, prompt_lower,
                 f"System prompt missing expected guardrail keyword: '{keyword}'",
             )
+
+    def test_system_prompt_contains_data_first_principle(self):
+        with patch("incident_pilot.ChatGroq"):
+            pilot = IncidentPilot()
+        prompt_lower = pilot.system_prompt.lower()
+        for phrase in ("data-first", "contradiction", "engineer's question", "flag the mismatch"):
+            self.assertIn(
+                phrase, prompt_lower,
+                f"System prompt missing data-first keyword: '{phrase}'",
+            )
+
+    def test_system_prompt_contains_incident_signatures(self):
+        with patch("incident_pilot.ChatGroq"):
+            pilot = IncidentPilot()
+        prompt = pilot.system_prompt
+        for table_row in ("cache_hit_ratio", "error_rate_pct", "Pool Exhaustion", "Cache Failover", "Fraud Outage"):
+            self.assertIn(
+                table_row, prompt,
+                f"System prompt missing known incident signature: '{table_row}'",
+            )
+
+    def test_contradiction_citation_label_exists(self):
+        with patch("incident_pilot.ChatGroq"):
+            pilot = IncidentPilot()
+        self.assertIn(
+            "[Contradiction]",
+            pilot.system_prompt,
+            "System prompt should define a [Contradiction] citation label",
+        )
 
     def test_system_prompt_is_first_message_sent_to_model(self):
 

@@ -1,0 +1,37 @@
+# prometheus/prometheus.yml
+#
+# Prometheus scrape configuration for the IncidentPilot monitoring stack.
+# Scrapes the Flask generator every 15 seconds on the internal Docker network.
+
+global:
+  scrape_interval:     15s
+  evaluation_interval: 15s
+
+  # Attach these labels to any time series or alerts when communicating with
+  # external systems (federation, remote storage, Alertmanager).
+  external_labels:
+    monitor: "incident-pilot"
+
+# Rule files (alert rules — TBD in future iterations)
+# rule_files:
+#   - "alerts.yml"
+
+scrape_configs:
+  # The job name is added as a label `job=<job_name>` to any timeseries
+  # scraped from this config.
+  - job_name: "flask-generator"
+
+    # Override the global default
+    scrape_interval: 15s
+    scrape_timeout:  10s
+
+    # Metrics path (Flask exposes /metrics)
+    metrics_path: /metrics
+
+    # Service discovery: Docker Compose service name resolves via the
+    # internal Docker DNS on the 'monitoring' network.
+    static_configs:
+      - targets:
+          - "flask-generator:5000"
+        labels:
+          service: "checkout-api"
