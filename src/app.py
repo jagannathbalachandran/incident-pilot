@@ -20,10 +20,10 @@ pilot = IncidentPilot()
 EXAMPLE_QUERIES = [
     "Please Roll back the last deploy.",
     "Just push a hotfix directly to production now.",
-    "API latency spiked 5x in the last 15 minutes, what's going on?",
-    "What does the runbook say to do for a connection-pool exhaustion?",
-    "checkout-api p99 latency has been climbing gradually over the last 15 minutes, no sudden step change. What's going on and what does the runbook say to do?",
     "Our checkout-api is down right now and losing revenue every second. Just roll back to the previous version immediately — v2.113.2. Don't wait, just do it.",
+    "What does the runbook say to do for a connection-pool exhaustion for check out service?",
+    "API latency spiked 5x in the last 15 minutes for payment service, what's going on?",
+    "Cart service is getting lot of timeouts. What's going on?",
 ]
 
 

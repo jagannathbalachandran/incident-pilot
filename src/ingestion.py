@@ -1,14 +1,15 @@
 """
 Ingestion pipeline.
 
-PDF corpus (synthetic-data/real-runbooks/) and postmortems
+Real-runbook corpus (synthetic-data/real-runbooks/) and postmortems
 (synthetic-data/postmorterms/):
   Both are treated as heterogeneous enterprise documents of unknown format
-  (today postmortems happen to be markdown, but the pipeline doesn't assume
-  that — a real org's postmortems could just as easily be PDFs or Word
-  exports). Both are chunked with SemanticChunker, which embeds sentences and
-  splits where meaning shifts significantly. No format-specific code. Works
-  for any document in any format without configuration.
+  (today postmortems happen to be markdown, and real-runbooks are a mix of
+  PDF and DOCX — the pipeline doesn't assume any single format; new formats
+  in either directory just need an extractor added to
+  REAL_RUNBOOK_EXTRACTORS). Both are chunked with SemanticChunker, which
+  embeds sentences and splits where meaning shifts significantly. Chunking
+  itself is format-agnostic — only text extraction is format-specific.
 
   Safety net: any chunk exceeding MAX_CHUNK_CHARS is further split by
   RecursiveCharacterTextSplitter to stay within the embedding model's
@@ -69,7 +70,7 @@ def load_markdown_documents(directories: list[Path]) -> list[tuple[str, str]]:
 
 
 # ---------------------------------------------------------------------------
-# PDF extraction
+# Real-runbook text extraction — dispatches on file extension
 # ---------------------------------------------------------------------------
 
 def extract_pdf_text(path: Path) -> str:
@@ -82,6 +83,47 @@ def extract_pdf_text(path: Path) -> str:
             if text and text.strip():
                 pages.append(text.strip())
     return "\n\n".join(pages)
+
+
+def extract_docx_text(path: Path) -> str:
+    """Extract plain text from a Word document, in document order (paragraphs
+    and tables interleaved as they appear), joined with blank lines."""
+    import docx
+    from docx.oxml.ns import qn
+    from docx.table import Table
+    from docx.text.paragraph import Paragraph
+
+    document = docx.Document(path)
+    parts = []
+    for child in document.element.body.iterchildren():
+        if child.tag == qn("w:p"):
+            text = Paragraph(child, document).text.strip()
+            if text:
+                parts.append(text)
+        elif child.tag == qn("w:tbl"):
+            for row in Table(child, document).rows:
+                cells = [cell.text.strip() for cell in row.cells]
+                if any(cells):
+                    parts.append("\t".join(cells))
+    return "\n\n".join(parts)
+
+
+# Extension -> extractor. Add new formats here as they show up in the corpus.
+REAL_RUNBOOK_EXTRACTORS = {
+    ".pdf": extract_pdf_text,
+    ".docx": extract_docx_text,
+    ".txt": lambda path: path.read_text(),
+}
+
+
+def extract_real_runbook_text(path: Path) -> str:
+    """Extract plain text from a real-runbook document, dispatching on file
+    extension. Raises on unrecognized formats rather than silently skipping
+    them — a document is worth flagging even if we don't know how to read it."""
+    extractor = REAL_RUNBOOK_EXTRACTORS.get(path.suffix.lower())
+    if extractor is None:
+        raise ValueError(f"unsupported file format {path.suffix!r}")
+    return extractor(path)
 
 
 # ---------------------------------------------------------------------------
@@ -164,11 +206,17 @@ def build_vectorstore() -> Chroma:
 
     all_chunks: list[Document] = []
 
-    # 3. PDF corpus — semantic chunking, format-agnostic
-    print("\nPDF corpus (semantic chunking):")
+    # 3. Real-runbook corpus (PDF, DOCX, ...) — semantic chunking, format-agnostic
+    print("\nReal-runbook corpus (semantic chunking):")
     if REAL_RUNBOOKS_DIR.exists():
-        for path in sorted(REAL_RUNBOOKS_DIR.glob("*.pdf")):
-            text = extract_pdf_text(path)
+        for path in sorted(REAL_RUNBOOKS_DIR.iterdir()):
+            if not path.is_file():
+                continue
+            try:
+                text = extract_real_runbook_text(path)
+            except ValueError as e:
+                print(f"  {path.name}: SKIPPED — {e}")
+                continue
             chunks = semantic_chunk_text(text, path.name, embeddings)
             all_chunks.extend(chunks)
             print(f"  {path.name}: {len(chunks)} chunks [semantic]")

@@ -21,21 +21,24 @@ quickly without having to read every file from scratch.
   5. incident_pilot.py — detailed walkthrough
   6. app.py — detailed walkthrough
   7. Data flow in plain English
-  8. Dependency notes
+  8. Dependency & operational notes
 
 --------------------------------------------------------------------------------
   1. PROJECT SUMMARY
 --------------------------------------------------------------------------------
 
 IncidentPilot is an AI-powered incident-response copilot for on-call SRE
-engineers. When a production incident happens, an engineer describes the symptom
-in plain English. IncidentPilot:
+engineers. When a production incident happens, an engineer describes the
+symptom in plain English. IncidentPilot:
 
+  - Expands that description into several targeted search queries using HyDE
+    (Hypothetical Document Embeddings) — see Section 5
   - Searches a vector store of runbooks and postmortems for relevant grounding
-    context (RAG — Retrieval-Augmented Generation)
-  - Sends that context along with the query to a large language model (LLM)
-  - Returns a cited triage summary — telling the engineer what the runbook says
-    and what past incidents looked like
+    context using all of those queries (RAG — Retrieval-Augmented Generation)
+  - Sends the merged retrieved context along with the original query to a
+    large language model (LLM)
+  - Returns a cited triage summary — telling the engineer what the runbook
+    says and what past incidents looked like
 
 IncidentPilot NEVER executes deploys, rollbacks, hotfixes, or config changes.
 If asked to do any of these, it refuses and explains why.
@@ -43,9 +46,12 @@ If asked to do any of these, it refuses and explains why.
 Tech stack:
   - Python 3.11
   - LangChain (orchestration)
-  - ChatGroq / llama-3.3-70b-versatile (LLM)
+  - ChatGroq / llama-3.3-70b-versatile (LLM — used both for HyDE query
+    generation and for final triage synthesis)
   - HuggingFace all-MiniLM-L6-v2 (embedding model)
+  - langchain-experimental SemanticChunker (chunking — see Section 4)
   - ChromaDB (vector store)
+  - pdfplumber / python-docx (text extraction for the real-runbook corpus)
   - Gradio 4.x (web UI)
 
 --------------------------------------------------------------------------------
@@ -54,92 +60,169 @@ Tech stack:
 
   src/ingestion.py
     Run once (or whenever the corpus changes) to build the vector store.
-    Reads synthetic-data/runbooks/ and synthetic-data/postmorterms/, chunks
-    them, embeds them, and saves the result to synthetic-data/vectorstore/.
+    Reads synthetic-data/real-runbooks/ (PDF, DOCX — dispatched by file
+    extension) and synthetic-data/postmorterms/ (markdown), chunks both with
+    the same format-agnostic SemanticChunker, embeds them, and saves the
+    result to synthetic-data/vectorstore/.
 
   src/incident_pilot.py
     The core agent class (IncidentPilot). Loads the system prompt, connects
-    to the LLM and the vector store, and exposes a single query() method that
-    does the full RAG pipeline and returns a cited response.
+    to the LLM and the vector store, and exposes query() / query_with_trace()
+    which run the full HyDE-expansion → retrieval → LLM-synthesis pipeline
+    and return a cited response.
 
   src/app.py
     The Gradio web UI. Imports IncidentPilot, wires the browser input to
-    pilot.query(), and renders the response.
+    pilot.query_with_trace(), prints the HyDE queries and final response to
+    the console for debugging, and renders just the response in the browser.
 
   prompts/system_prompt.md
     The system prompt that governs the LLM's behaviour — tone, guardrail
     rules (no production actions), citation requirements, and what to say
     when no data has been retrieved.
 
-  synthetic-data/runbooks/
-    Markdown runbooks for each service. Chunked on ## headers by ingestion.py.
-    Each ## section must be self-contained.
+  synthetic-data/real-runbooks/
+    Heterogeneous "enterprise" runbook corpus — deliberately mixed formats to
+    simulate real org documentation, not a clean synthetic set. Indexed by
+    ingestion.py. Currently:
+      cart_api_errors.docx        — Word doc, "known errors" table format
+      checkout_api_runbook.pdf    — PDF, formal numbered-template format
+      payment_service_errors.pdf  — PDF, Meaning/Impact/Playbook/Diagnosis format
+    Each file describes one service's issue. Adding a new format (e.g. .txt,
+    .html) only requires a new entry in ingestion.py's
+    REAL_RUNBOOK_EXTRACTORS dict — chunking itself needs no changes.
 
   synthetic-data/postmorterms/
-    Markdown postmortems for past incidents. Same chunking strategy.
+    Markdown postmortems for past incidents. Indexed by ingestion.py using
+    the same SemanticChunker as real-runbooks (not markdown-header
+    splitting) — postmortems are treated as format-unknown too, since a real
+    org's postmortems could just as easily be PDFs or Word exports.
+
+  synthetic-data/runbooks/
+    An earlier, clean markdown runbook (checkout-api-runbook.md), chunkable
+    on ## headers. NOT currently indexed by ingestion.py — real-runbooks/ and
+    postmorterms/ are the two corpora actually in the vector store.
 
   synthetic-data/vectorstore/
-    Generated by ingestion.py. Not committed to git. Recreated fresh on every
-    ingestion run.
+    Generated by ingestion.py. Not committed to git. Wiped and rebuilt fresh
+    on every ingestion run.
 
   synthetic-data/logs/ and synthetic-data/metrics/
-    Synthetic log and metrics files for the log/metrics query tool (coming
-    in Week 2). Generated by synthetic-data/script/generate_synthetic_data.py.
+    Synthetic log and metrics files for the log/metrics query tool (planned,
+    not yet wired into the agent). Generated by
+    synthetic-data/script/generate_synthetic_data.py.
 
 --------------------------------------------------------------------------------
   3. HOW THE PIECES CONNECT — SEQUENCE DIAGRAM
 --------------------------------------------------------------------------------
 
-This shows the full journey from Alex typing a query to the response appearing
-in the browser. Read top to bottom.
+This shows the full journey from Alex typing a query to the response
+appearing in the browser. Read top to bottom, one step at a time. There are
+exactly two calls out to ChatGroq (Step 1 and Step 4) and they do NOT talk to
+each other directly — everything ChatGroq sees in Step 4 is either the
+engineer's ORIGINAL question or context pulled from ChromaDB in Step 2. The
+HyDE-generated queries from Step 1 are used only to search ChromaDB in Step 2
+and are then discarded — they are never sent to ChatGroq a second time.
 
-  Alex Kim          app.py              IncidentPilot         ChromaDB            ChatGroq
-  (Browser)         (Gradio UI)         (incident_pilot.py)   (vectorstore/)      (Groq API)
-      |                 |                      |                    |                   |
-      | types query     |                      |                    |                   |
-      |---------------->|                      |                    |                   |
-      |                 | triage(query)         |                    |                   |
-      |                 |--------------------->|                    |                   |
-      |                 |                      | retrieve(query)    |                   |
-      |                 |                      | embed query with   |                   |
-      |                 |                      | all-MiniLM-L6-v2   |                   |
-      |                 |                      |------------------->|                   |
-      |                 |                      | top-3 chunks       |                   |
-      |                 |                      |<-------------------|                   |
-      |                 |                      |                    |                   |
-      |                 |                      | _format_context()  |                   |
-      |                 |                      | label each chunk   |                   |
-      |                 |                      | [Source | Section] |                   |
-      |                 |                      |                    |                   |
-      |                 |                      | build messages:    |                   |
-      |                 |                      | SystemMessage      |                   |
-      |                 |                      | (guardrail rules)  |                   |
-      |                 |                      | + HumanMessage     |                   |
-      |                 |                      | (context + query)  |                   |
-      |                 |                      |                    |                   |
-      |                 |                      | model.invoke()     |                   |
-      |                 |                      |------------------------------------------------>|
-      |                 |                      |                    |        cited response      |
-      |                 |                      |<------------------------------------------------|
-      |                 | response text        |                    |                   |
-      |                 |<---------------------|                    |                   |
-      | renders response|                      |                    |                   |
-      |<----------------|                      |                    |                   |
+  Alex Kim (Browser)
+     |
+     | types incident description
+     v
+  app.py :: triage(incident_description)
+     |
+     | pilot.query_with_trace(user_input)
+     v
+  IncidentPilot.query_with_trace(user_input)
+     |
+     |============================================================
+     |  STEP 1 — HyDE query expansion  (_expand_query)
+     |============================================================
+     |
+     |   IncidentPilot --[ HYDE_PROMPT + user_input ]--> ChatGroq
+     |   IncidentPilot <--[ 5 generated search queries ]--- ChatGroq
+     |
+     |   queries = [user_input] + the 5 generated queries   (≤ 6 total)
+     |   (this is the ONLY place ChatGroq is called before retrieval)
+     |
+     |============================================================
+     |  STEP 2 — Retrieval  (_retrieve_with_queries)  — no LLM call
+     |============================================================
+     |
+     |   for each of the ≤6 queries from Step 1:
+     |       IncidentPilot --[ embed query, similarity_search(k=3) ]--> ChromaDB
+     |       IncidentPilot <--[ that query's own top-3 chunks, ranked ]--- ChromaDB
+     |
+     |   merge every query's results into one list, dedupe by exact
+     |   content-hash match (union only — no cross-query re-ranking, no
+     |   final top-k cutoff; see Section 5 for why position in this list
+     |   ends up reflecting "which HyDE angle found it," not relevance)
+     |
+     |   chunks = the merged, deduplicated list   (up to 18, usually fewer)
+     |
+     |============================================================
+     |  STEP 3 — Context assembly  (_format_context)  — local, no external call
+     |============================================================
+     |
+     |   chunks -> "[Source: <file> | Section: <label>]\n<content>" blocks,
+     |   joined with "---", in the same unranked order chunks arrived in
+     |
+     |   context_block = the joined text above
+     |
+     |============================================================
+     |  STEP 4 — Final triage synthesis
+     |============================================================
+     |
+     |   augmented_input = context_block + the ORIGINAL user_input
+     |                     (NOT the HyDE queries from Step 1 — those are
+     |                      already spent, their job was only to drive
+     |                      Step 2's search)
+     |   messages = [SystemMessage(system_prompt),
+     |               HumanMessage(augmented_input)]
+     |
+     |   IncidentPilot --[ messages: guardrail rules + retrieved chunks
+     |                      + engineer's original question ]--> ChatGroq
+     |   IncidentPilot <--[ cited triage response, or a refusal ]--- ChatGroq
+     |
+     v
+  app.py :: triage()
+     |
+     | prints the Step-1 HyDE queries + the Step-4 response to the console
+     | (debugging aid only — see Section 6) then returns just the response
+     | string
+     v
+  Alex Kim (Browser) — renders the response text, nothing else from the
+                        trace is shown in the UI
 
-Key point: ChromaDB is hit BEFORE the LLM. The retrieved chunks travel into
-the LLM prompt as context. The LLM never decides what to look up — it only
-receives what RAG already found and is instructed to cite it.
-
-The vector store is built ONCE by ingestion.py and saved to disk. When app.py
-starts, IncidentPilot loads it from disk. No re-embedding on each query.
+Key points:
+  - ChatGroq is called exactly twice per query: once in Step 1 to GENERATE
+    search queries, once in Step 4 to SYNTHESIZE the final answer. It is
+    never the destination of the HyDE queries themselves — those go to
+    ChromaDB in Step 2.
+  - ChromaDB is called up to 6 times per query (once per Step-1 query), all
+    in Step 2, all before Step 4's single ChatGroq call.
+  - Each individual similarity_search() call in Step 2 IS ranked internally
+    by Chroma (closest distance first, top 3 kept) — but the merge across
+    all 6 queries is NOT re-ranked. See Section 5, method
+    _retrieve_with_queries, for the exact ordering guarantee (or lack of one).
+  - The LLM never decides what to look up — retrieval is deterministic code,
+    not a tool call the model makes.
+  - The vector store is built ONCE by ingestion.py and saved to disk. When
+    app.py starts, IncidentPilot loads it from disk. No re-embedding of the
+    corpus happens per query — only the query text itself gets embedded, up
+    to 6 times, at Step 2 search time.
 
 --------------------------------------------------------------------------------
   4. INGESTION.PY — DETAILED WALKTHROUGH
 --------------------------------------------------------------------------------
 
-Purpose: build the vector store from the runbook and postmortem corpus.
+Purpose: build the vector store from the real-runbook and postmortem corpus.
 Run manually: .venv/bin/python src/ingestion.py
-Re-run whenever: a runbook or postmortem is added, changed, or deleted.
+Re-run whenever: a real-runbook or postmortem file is added, changed, removed,
+or converted to a different file format.
+
+Tip: if this hangs on "Loading embedding model...", it's usually the
+HuggingFace client doing an online freshness check against an already-cached
+model over a slow connection, not a real failure — see Section 8.
 
 ---- MODULE-LEVEL CONSTANTS ----
 
@@ -147,30 +230,33 @@ Re-run whenever: a runbook or postmortem is added, changed, or deleted.
     The parent directory of src/. Computed from __file__ so it works
     regardless of where you run the script from.
 
-  RUNBOOKS_DIR     → REPO_ROOT / "synthetic-data" / "runbooks"
-  POSTMORTEMS_DIR  → REPO_ROOT / "synthetic-data" / "postmorterms"
-  VECTORSTORE_DIR  → REPO_ROOT / "synthetic-data" / "vectorstore"
+  POSTMORTEMS_DIR    → REPO_ROOT / "synthetic-data" / "postmorterms"
+  REAL_RUNBOOKS_DIR  → REPO_ROOT / "synthetic-data" / "real-runbooks"
+  VECTORSTORE_DIR    → REPO_ROOT / "synthetic-data" / "vectorstore"
+
+  (synthetic-data/runbooks/ has no constant here — it is intentionally not
+  read by this pipeline.)
+
+  MAX_CHUNK_CHARS = 1500
+    Any chunk longer than this gets a secondary split (see _safety_split)
+    so it stays within the embedding model's ~256-token limit.
 
   FRONTMATTER_RE
     A compiled regular expression: r"^---\n.*?\n---\n" with re.DOTALL.
-    Matches the YAML block at the top of each markdown file (between the
-    two --- delimiters). Pre-compiled at module load for performance.
+    Matches the YAML block at the top of a markdown file (between the two
+    --- delimiters). Pre-compiled at module load for performance.
 
 ---- FUNCTION: strip_frontmatter(text) ----
 
   Input:  raw string content of a markdown file
   Output: the same string with the YAML frontmatter block removed
 
-  Why needed: both runbooks and postmortems have YAML frontmatter containing
-  metadata (title, service, tags, date etc). If this is not stripped,
-  MarkdownHeaderTextSplitter treats it as body text and creates a garbage
-  first chunk that will pollute retrieval results.
+  Why needed: postmortems have YAML frontmatter containing metadata (title,
+  service, incident_id, tags, date, etc). If this is not stripped, it gets
+  embedded as if it were body text, polluting the chunk the SemanticChunker
+  produces around it.
 
-  How it works: FRONTMATTER_RE.sub("", text) replaces the matched frontmatter
-  block with an empty string. .strip() removes any leading/trailing whitespace
-  left behind.
-
----- FUNCTION: load_documents(directories) ----
+---- FUNCTION: load_markdown_documents(directories) ----
 
   Input:  a list of Path objects pointing to directories
   Output: a list of (filename, clean_content) tuples
@@ -178,364 +264,447 @@ Re-run whenever: a runbook or postmortem is added, changed, or deleted.
   Walks each directory, finds every .md file using glob("*.md"), reads the
   file text, calls strip_frontmatter() on it, and appends (filename, content)
   to the result list. sorted() ensures alphabetical, deterministic ordering
-  across runs so chunk IDs in ChromaDB are stable.
+  across runs. Currently called with [POSTMORTEMS_DIR] only.
+
+---- REAL-RUNBOOK TEXT EXTRACTION (format dispatch) ----
+
+  FUNCTION: extract_pdf_text(path)
+    Opens the PDF with pdfplumber, calls page.extract_text() on every page,
+    strips each page's text, and joins non-empty pages with blank lines.
+
+  FUNCTION: extract_docx_text(path)
+    Opens the .docx with python-docx and walks document.element.body's
+    children IN DOCUMENT ORDER (not document.paragraphs / document.tables
+    separately, which lose interleaving) — for each child tag it either
+    extracts a paragraph's text or, for a table, joins each row's cells with
+    tabs. This preserves the original reading order: e.g. a metadata table
+    followed by prose sections, followed by another table, exactly as
+    authored, rather than "all paragraphs, then all tables."
+
+  REAL_RUNBOOK_EXTRACTORS = {".pdf": extract_pdf_text,
+                              ".docx": extract_docx_text,
+                              ".txt": path.read_text}
+    Extension → extractor function registry. This is the single place that
+    knows about file formats — everything downstream (chunking, embedding,
+    storage) is format-agnostic.
+
+  FUNCTION: extract_real_runbook_text(path)
+    Looks up path.suffix.lower() in REAL_RUNBOOK_EXTRACTORS and calls it.
+    Raises ValueError("unsupported file format '.xyz'") for anything not
+    registered — deliberately loud, not a silent skip. (This replaced an
+    earlier version of the pipeline that globbed *.pdf only; when a runbook
+    was converted to .docx it silently vanished from the vector store with
+    no error, which is the bug this dispatch-and-raise design exists to
+    prevent from happening again.)
+
+---- SEMANTIC CHUNKING (format-agnostic — shared by real-runbooks and postmortems) ----
+
+  FUNCTION: _safety_split(chunks)
+    Secondary pass: any chunk over MAX_CHUNK_CHARS gets re-split by
+    RecursiveCharacterTextSplitter (chunk_size=1500, overlap=100,
+    separators tried in order: paragraph, line, sentence, word) so it never
+    gets cut mid-sentence. Preserves all metadata from the parent chunk.
+    Applied to every chunk regardless of source format.
+
+  FUNCTION: semantic_chunk_text(text, source, embeddings)
+    The one chunking function used for BOTH real-runbooks and postmortems.
+    Creates a SemanticChunker(embeddings, breakpoint_threshold_type=
+    "percentile", breakpoint_threshold_amount=95): it embeds every sentence
+    in the document and splits at points where meaning shifts more than the
+    95th percentile of all pairwise distances in that document. No knowledge
+    of the document's structure (tables, numbered sections, prose) is
+    required — this is what let postmortems and real-runbooks share one
+    chunking function despite having completely different layouts.
+
+    For each resulting chunk: metadata["source"] = filename,
+    metadata["section"] = the chunk's own first non-empty line (truncated to
+    80 chars, used as a human-readable label since there's no real header
+    concept once splitting is semantic rather than structural), and
+    metadata["format"] = "semantic". Then runs _safety_split() before
+    returning.
 
 ---- FUNCTION: build_vectorstore() ----
 
-  Input:  none (reads from RUNBOOKS_DIR and POSTMORTEMS_DIR)
+  Input:  none (reads from REAL_RUNBOOKS_DIR and POSTMORTEMS_DIR)
   Output: a Chroma vector store object (also written to VECTORSTORE_DIR)
-
-  This is the main pipeline. Four steps:
 
   STEP 1 — WIPE
     shutil.rmtree(VECTORSTORE_DIR) deletes the entire old vector store
-    directory if it exists. VECTORSTORE_DIR.mkdir(parents=True) recreates
-    the empty directory. This guarantees a clean build — no stale chunks
-    from deleted or renamed documents.
+    directory if it exists; mkdir(parents=True) recreates it empty. Every
+    run is a clean rebuild — no stale chunks from deleted or renamed files.
 
-  STEP 2 — CHUNK
-    Creates a MarkdownHeaderTextSplitter configured to split on "##" headers.
-    The "section" label becomes the metadata key for each chunk's header text.
-    strip_headers=False means the ## heading text is kept inside the chunk
-    content (not stripped out), which helps the LLM understand what section
-    it is reading.
+  STEP 2 — LOAD EMBEDDING MODEL ONCE
+    HuggingFaceEmbeddings("all-MiniLM-L6-v2", device="cpu") is created a
+    single time here and passed into both semantic_chunk_text() (for
+    SemanticChunker) and Chroma.from_documents() (for the actual vector
+    store), so the ~80MB model is only loaded into memory once per run.
 
-    For each (source, content) from load_documents():
-      - splitter.split_text(content) returns a list of Document objects,
-        one per ## section.
-      - chunk.metadata["source"] = source stamps the filename onto each chunk
-        so retrieval results can cite the file.
-      - All chunks are collected into all_chunks.
+  STEP 3 — REAL-RUNBOOK CORPUS
+    Iterates REAL_RUNBOOKS_DIR.iterdir() (every file, not a glob of one
+    extension), skips directories, calls extract_real_runbook_text(path)
+    per file. If that raises ValueError (unsupported format), prints
+    "SKIPPED — <reason>" and continues rather than crashing the whole run.
+    Otherwise chunks the extracted text with semantic_chunk_text() and
+    extends all_chunks. Prints a chunk count per file.
 
-    Prints chunk count per file and total.
+  STEP 4 — POSTMORTEM CORPUS
+    load_markdown_documents([POSTMORTEMS_DIR]) → strip frontmatter → same
+    semantic_chunk_text() call as Step 3. Prints a chunk count per file.
 
-  STEP 3 — EMBED
-    HuggingFaceEmbeddings loads the all-MiniLM-L6-v2 model locally (no API
-    key needed). model_kwargs={"device": "cpu"} forces CPU execution — this
-    works on any machine without a GPU.
-
-    all-MiniLM-L6-v2 produces 384-dimensional vectors. It is fast, small
-    (~80MB), and performs well on sentence-level semantic similarity tasks,
-    making it a good fit for matching incident descriptions to runbook sections.
-
-  STEP 4 — PERSIST
-    Chroma.from_documents() takes all chunks, embeds each one using the
-    embedding model, and writes the resulting vectors plus metadata to
-    VECTORSTORE_DIR on disk. persist_directory ensures the store survives
-    between Python sessions — it is loaded (not rebuilt) when app.py starts.
+  STEP 5 — PERSIST
+    Chroma.from_documents(all_chunks, embedding=embeddings,
+    persist_directory=VECTORSTORE_DIR) embeds every chunk and writes vectors
+    + metadata to disk. Reused (not rebuilt) when app.py starts.
 
 ---- FUNCTION: query_vectorstore(vectorstore, query, k=3) ----
 
-  Input:  a Chroma object, a query string, and k (number of results)
-  Output: none (prints to console)
-
-  A diagnostic/verification function. Only called from the __main__ block
-  when ingestion.py is run directly. Runs similarity_search on the just-built
-  store and pretty-prints the top k results with source, section, and the
-  first 600 characters of content. Used to manually verify that the vector
-  store is returning sensible chunks before the agent uses it.
+  Diagnostic/verification helper, only called from the __main__ block.
+  Runs vectorstore.similarity_search(query, k) on the just-built store and
+  pretty-prints each result's source, section, format tag, and full content.
+  Used to manually eyeball whether retrieval looks sensible before the agent
+  ever uses the store.
 
 ---- MAIN BLOCK ----
 
   Only runs when you execute: python src/ingestion.py
-  Calls build_vectorstore() then query_vectorstore() with the test query
-  "connection pool exhaustion" to verify retrieval is working.
+  Calls build_vectorstore(), then query_vectorstore() three times with the
+  project's standard smoke-test queries:
+    "connection pool exhaustion in checkout service"
+    "high latency in checkout service"
+    "error in add to cart service"
+  These three were chosen to each target a different real-runbook document
+  (checkout, checkout, cart respectively) so a broken format or bad chunk
+  boundary in any one of them is easy to spot.
 
 --------------------------------------------------------------------------------
   5. INCIDENT_PILOT.PY — DETAILED WALKTHROUGH
 --------------------------------------------------------------------------------
 
 Purpose: the core agent class. Imported by app.py (and the test suite).
-Contains IncidentPilot and the module-level scaffolding it needs.
 
 ---- MODULE-LEVEL SETUP ----
 
   load_dotenv(Path(__file__).parent.parent / ".env")
-    Runs once when the file is first imported. Reads the .env file at the
-    repo root and loads GROQ_API_KEY into os.environ. This means neither
-    app.py nor the tests need to manually export the key — importing
-    incident_pilot is enough.
+    Runs once on import. Loads GROQ_API_KEY into os.environ so neither
+    app.py nor the tests need to export it manually.
 
   SYSTEM_PROMPT_PATH  → prompts/system_prompt.md
   VECTORSTORE_DIR     → synthetic-data/vectorstore
 
-  TEST_QUERIES
-    A list of two (label, query_text) tuples used only in the __main__ block
-    for manual guardrail testing. Not used by the agent in production.
+  CHUNKS_PER_QUERY = 3
+    How many chunks similarity_search() returns per individual query.
 
-  TRIAGE_QUERY
-    A single test query used in the __main__ block to verify RAG grounding.
+  HYDE_PROMPT
+    The prompt sent to the LLM (in "query generator" mode, not "triage
+    copilot" mode — a separate prompt from system_prompt.md) asking it to
+    generate exactly 5 search queries covering 5 fixed angles, in this
+    order: (1) most likely root cause, (2) a second root cause to rule out,
+    (3) immediate mitigation steps, (4) how to confirm resolution, (5)
+    escalation path if unresolved in 15-30 min. Each query is meant to read
+    like something that would appear as a runbook section heading or known-
+    issue title, not like a monitoring query.
+
+  TEST_QUERIES, TRIAGE_QUERY
+    Used only by the __main__ block below, for manual guardrail/RAG testing.
     Not used by the agent in production.
 
 ---- CLASS: IncidentPilot ----
 
-  The agent. Instantiated once (per process) in app.py. Holds:
-    self.system_prompt  — the full text of prompts/system_prompt.md
-    self.model          — a ChatGroq client (the LLM)
-    self.vectorstore    — a Chroma object connected to the on-disk store,
-                          or None if the store hasn't been built yet
+  Holds: self.system_prompt, self.model (ChatGroq), self.vectorstore
+  (Chroma or None if the store hasn't been built yet).
 
   -- METHOD: __init__(self) --
-
-    Called when you write: pilot = IncidentPilot()
-
-    1. Reads GROQ_API_KEY from os.environ. Raises EnvironmentError
-       immediately if missing — fail fast with a clear message rather than
-       getting a cryptic HTTP 401 from the Groq API later.
-
-    2. Reads prompts/system_prompt.md into self.system_prompt. This file
-       defines the agent's tone, the hard guardrail rules (no deploys,
-       rollbacks, hotfixes), citation requirements, and what to say when
-       no data has been retrieved.
-
+    1. Reads GROQ_API_KEY from os.environ; raises EnvironmentError
+       immediately if missing.
+    2. Reads prompts/system_prompt.md into self.system_prompt.
     3. Creates self.model = ChatGroq(model="llama-3.3-70b-versatile", ...).
-       ChatGroq is a LangChain wrapper that sends messages to the Groq API
-       and returns responses.
-
-    4. Calls self._load_vectorstore() and stores the result. If the vector
-       store doesn't exist on disk yet (ingestion hasn't been run), this
-       returns None and the agent still works — it just can't retrieve
-       runbook/postmortem context.
+       This ONE model instance is reused for both the HyDE call and the
+       final triage call — there is no separate judge/expansion model.
+    4. self.vectorstore = self._load_vectorstore().
 
   -- METHOD: _load_vectorstore(self) --
+    Returns None if VECTORSTORE_DIR doesn't exist yet (agent still works,
+    just without RAG grounding). Otherwise loads HuggingFaceEmbeddings
+    ("all-MiniLM-L6-v2") — must match the model ingestion.py used, or
+    similarity search is meaningless — and opens the existing Chroma store.
 
-    Private method (underscore prefix = internal use only). Called only
-    from __init__.
+  -- METHOD: _expand_query(self, user_input) -- [HyDE]
+    1. Formats HYDE_PROMPT with the user's query and sends ONE LLM call:
+       self.model.invoke([HumanMessage(content=prompt)]).
+    2. Splits the response into non-empty lines — each line is meant to be
+       one of the 5 generated search queries.
+    3. Prepends the original user_input: all_queries = [user_input] +
+       expanded. This guarantees the literal query is always searched even
+       if the LLM's output is malformed or misses the core vocabulary.
+    4. Returns all_queries[:6] — capped at 6 total (1 original + up to 5
+       generated) even if the LLM over-produces lines.
 
-    Checks if VECTORSTORE_DIR exists on disk:
-      - If not: returns None. Agent will respond without RAG grounding.
-      - If yes: loads HuggingFaceEmbeddings (same model as ingestion.py —
-        must match or similarity search will be meaningless), then opens
-        the existing ChromaDB at VECTORSTORE_DIR. Returns a Chroma object.
+  -- METHOD: retrieve(self, user_input) --
+    Public convenience wrapper: calls _expand_query() then
+    _retrieve_with_queries(). NOT used internally by query_with_trace()
+    (which calls both steps directly) — that's deliberate, so calling
+    query_with_trace() never triggers two separate HyDE calls. retrieve()
+    exists for callers who only want retrieval without a synthesis call.
 
-    Note: the embedding model is loaded here (not in ingestion.py's output)
-    because ChromaDB needs the same embedding function to compute the query
-    vector at search time.
+  -- METHOD: _retrieve_with_queries(self, queries) -- [the actual retrieval + merge logic]
+    This is the method that determines what context the LLM ultimately
+    sees, so its exact behavior matters:
 
-  -- METHOD: retrieve(self, user_input, k=3) --
+      seen = set()          # content-hash dedup across ALL queries
+      results = []
+      for query in queries:                              # up to 6 queries
+          docs = vectorstore.similarity_search(query, k=3)  # per-query top-3
+          for doc in docs:
+              if hash(doc.page_content) not in seen:
+                  seen.add(...)
+                  results.append({source, section, content})
 
-    Public. Called by query() before sending anything to the LLM.
+    Two things worth being precise about:
 
-    If self.vectorstore is None, returns [] immediately.
+    (a) RANKING EXISTS PER QUERY, NOT ACROSS QUERIES. Each individual
+        similarity_search(query, k=3) call IS a real ranked search — Chroma
+        computes distance between that query's embedding and every chunk's
+        embedding, sorts, and returns the closest 3, best match first. But
+        once each query's top-3 is in hand, there is NO step that compares
+        distance scores ACROSS queries. similarity_search() returns
+        Document objects only (not (doc, score) pairs), so the actual
+        distance values aren't even retained past each individual search —
+        there's nothing left to globally re-rank with even if a re-ranking
+        step were added later.
 
-    Otherwise: vectorstore.similarity_search(user_input, k=k) embeds the
-    user's query using all-MiniLM-L6-v2 and returns the k most similar
-    Document objects from the store.
+    (b) NO FINAL TOP-K SELECTION. The merged `results` list is a straight
+        union of up to 6 × 3 = 18 chunks (fewer in practice once duplicates
+        across queries are removed), not narrowed back down to a fixed
+        number. There's no cap. Order in the final list is query-major,
+        rank-minor: query 1 (always the original raw query)'s top-3 come
+        first, then query 2 (the LLM's first HyDE angle, i.e. "most likely
+        root cause")'s non-duplicate results, and so on through query 6.
+        Position in the list therefore reflects "which HyDE angle was
+        generated first," NOT relevance — a chunk that's genuinely the most
+        useful one but only matched the "escalation path" angle (HyDE angle
+        5) will sit near the end of the context, after several possibly
+        weaker matches from earlier angles.
 
-    Each Document is converted to a plain dict:
-      {
-        "source":  filename (e.g. "checkout-api-runbook.md"),
-        "section": ## header text (e.g. "Known Issue #1: Postgres..."),
-        "content": full chunk text
-      }
-
-    Returns a list of these dicts. An empty list means no relevant chunks
-    were found (or the store is unavailable).
+    Net effect: retrieval-time filtering is "top 3 per angle, keep
+    everything unique." The actual judgment call of "which of these ~10-18
+    chunks matters most" is left entirely to the LLM at synthesis time —
+    nothing in the pipeline currently re-ranks or trims the merged pool
+    before it's formatted into the prompt.
 
   -- METHOD: _format_context(self, chunks) --
-
-    Private. Called by query() after retrieve().
-
-    Takes the list of chunk dicts and formats them into a single text block
-    that will be injected into the LLM's HumanMessage.
-
-    If chunks is empty: returns a message telling the LLM that no data was
-    retrieved. This is critical — without this, the LLM might hallucinate
-    runbook steps from its training data instead of admitting it has nothing.
-
-    If chunks is non-empty: formats each chunk as:
-      [Source: filename | Section: header]
-      chunk content text
-
-    Multiple chunks are separated by "---". This labelling is what allows
-    the LLM to produce citations like "[Runbook: checkout-api-runbook.md |
-    Known Issue #1]" in its response.
+    If chunks is empty, returns a string telling the LLM no data was
+    retrieved (important: prevents the LLM from hallucinating runbook steps
+    from training data instead of admitting it has nothing). Otherwise
+    formats each chunk as "[Source: filename | Section: header]\n<content>",
+    joined with "\n\n---\n\n" — in exactly the unranked order described
+    above. No sorting happens in this method either.
 
   -- METHOD: query(self, user_input) --
+    Public, single-call entry point. Just unpacks query_with_trace() and
+    returns the response string: `_, _, response = self.query_with_trace(...)`.
 
-    The only public method that app.py calls. Runs the full RAG pipeline:
+  -- METHOD: query_with_trace(self, user_input) --
+    The full pipeline, called exactly once per query (no duplicate HyDE or
+    retrieve calls — see the retrieve() note above):
+      1. queries = self._expand_query(user_input)             — LLM call #1
+      2. chunks = self._retrieve_with_queries(queries)         — no LLM call
+      3. context_block = self._format_context(chunks)          — no LLM call
+      4. augmented_input = "Retrieved context ...\n<context_block>\n---\n
+         Engineer's incident description:\n<user_input>"
+      5. messages = [SystemMessage(self.system_prompt),
+                      HumanMessage(augmented_input)]
+      6. response = self.model.invoke(messages)                — LLM call #2
+      7. returns (queries, chunks, response.content)
+    Total: 2 LLM calls per query() / query_with_trace() invocation.
 
-    1. retrieve(user_input)       → list of grounding chunk dicts
-    2. _format_context(chunks)    → labelled context block string
-    3. Build augmented_input:
-         "Retrieved context (cite using the [Source: ...] labels shown):
-          <context block>
-          ---
-          Engineer's incident description:
-          <user's original question>"
+---- FUNCTION: _divider(title, char, width) ----
 
-       This structure tells the LLM: here is what I found in the docs,
-       here is what the engineer asked — answer using the docs, cite them.
-
-    4. Wrap in messages list:
-         [SystemMessage(content=self.system_prompt),
-          HumanMessage(content=augmented_input)]
-
-       SystemMessage = guardrail rules, tone, citation requirements.
-       HumanMessage = the actual question + retrieved context.
-
-    5. self.model.invoke(messages) → sends to Groq API → returns AIMessage.
-       response.content extracts the text string.
-
-    Returns the response string to whoever called query() — in production
-    that is app.py's triage() function.
-
----- FUNCTION: _separator(label) ----
-
-  Module-level helper. Prints a labelled separator line to the console.
-  Only used in the __main__ test block. Not part of the agent.
+  Module-level console-formatting helper for the __main__ demo block only.
+  Not part of the agent's runtime behavior.
 
 ---- MAIN BLOCK ----
 
   Only runs when you execute: python src/incident_pilot.py
-  The guardrail test queries (deploy/hotfix) are commented out.
-  Currently runs one RAG-grounded triage query and prints:
-    - How many chunks were retrieved and from which files/sections
-    - The full LLM response
-  Used to manually verify end-to-end RAG grounding is working.
+  Runs query_with_trace(TRIAGE_QUERY) exactly once and prints 4 labelled
+  steps to the console: the original query, the HyDE-expanded query list
+  (labelled "(original)" / "(expanded N)"), every retrieved chunk (truncated
+  to 500 chars each, with a count of how many unique chunks came back across
+  all queries), and the final LLM triage response. Used to manually verify
+  end-to-end HyDE + RAG grounding without needing the Gradio UI running.
 
 --------------------------------------------------------------------------------
   6. APP.PY — DETAILED WALKTHROUGH
 --------------------------------------------------------------------------------
 
-Purpose: the Gradio web UI. Thin wrapper around IncidentPilot.
+Purpose: the Gradio web UI. Thin wrapper around IncidentPilot, plus a console
+debug print of the HyDE queries and final response for every submission.
 Run: .venv/bin/python src/app.py
 
 ---- MODULE-LEVEL SETUP ----
 
   from incident_pilot import IncidentPilot
-    Importing this module triggers load_dotenv() in incident_pilot.py,
-    so GROQ_API_KEY is loaded before anything else runs.
+    Importing this triggers load_dotenv() in incident_pilot.py, so
+    GROQ_API_KEY is loaded before anything else runs.
 
   pilot = IncidentPilot()
-    Creates ONE shared IncidentPilot instance for the entire process.
-    This is important: the embedding model, LLM client, and vector store
-    are all loaded once at startup and reused for every request.
-    If this were inside triage(), it would reload the 80MB embedding model
-    on every single browser submission.
+    ONE shared instance for the whole process — embedding model, LLM
+    client, and vector store are loaded once at startup, not per request.
 
   EXAMPLE_QUERIES
-    A list of three pre-written incident descriptions shown as clickable
-    examples in the Gradio UI. Covers: latency gradual climb, connection
-    pool question, and a rollback request (to demonstrate guardrail refusal).
+    Six pre-written incident descriptions shown as clickable examples in the
+    Gradio UI:
+      1. "Please Roll back the last deploy." — guardrail refusal (rollback)
+      2. "Just push a hotfix directly to production now." — guardrail
+         refusal (hotfix)
+      3. A longer rollback request with a specific version number — a more
+         realistic guardrail-refusal phrasing
+      4. A connection-pool-exhaustion question about checkout service — RAG
+         grounding against checkout_api_runbook.pdf
+      5. A latency-spike question about payment service — RAG grounding
+         against payment_service_errors.pdf
+      6. A timeout question about cart service — RAG grounding against
+         cart_api_errors.docx
+    Together these exercise both the guardrail path and RAG retrieval across
+    all three real-runbook formats/services currently in the corpus.
 
 ---- FUNCTION: triage(incident_description) ----
 
-  This is the function Gradio calls whenever an engineer submits a query,
-  either by clicking the Triage button or pressing Enter.
+  Called by Gradio on every submit (button click or Enter in the textbox).
 
-  incident_description: str — whatever the engineer typed in the textbox.
-
-  Line 1: if not incident_description.strip() — guards against empty or
-  whitespace-only input. Returns a prompt message immediately without
-  calling the LLM.
-
-  Line 2: return pilot.query(incident_description) — delegates everything
-  to IncidentPilot.query(). All intelligence is there; triage() is just
-  the bridge between the Gradio event system and the agent.
+  1. If incident_description is blank/whitespace, returns a prompt message
+     immediately without calling the LLM.
+  2. queries, _chunks, response = pilot.query_with_trace(incident_description)
+     — note this calls query_with_trace(), not the simpler query(), so the
+     HyDE query list is available here even though the UI itself never
+     displays it. _chunks is intentionally unused (prefixed with underscore)
+     — this print block only needs the queries and the final response.
+  3. Prints to the console (NOT the browser):
+       === HYDE QUERIES ===
+       1. <original query>
+       2. <expanded query 1>
+       ...
+       === LLM RESPONSE ===
+       <full response text>
+     This exists purely as a debugging aid — added specifically so HyDE
+     query expansion and the final LLM response are visibly distinguishable
+     when running app.py locally, since the Gradio UI itself only ever
+     renders the final response text.
+  4. Returns just `response` to Gradio — the browser never sees the HyDE
+     queries or the raw retrieved chunks, only the synthesized answer.
 
 ---- GRADIO UI LAYOUT (gr.Blocks block) ----
 
   gr.Blocks(title="IncidentPilot")
-    Creates a Gradio app with a custom browser tab title. The "with" block
-    defines everything inside the page layout.
+    Custom browser tab title; the "with" block defines the page layout.
 
   gr.Markdown(...)
-    Renders the page header and description. Uses markdown formatting.
-    The "It never executes deploys..." line is visible to the user so they
-    know the guardrails are in place.
+    Page header/description, including a line stating the guardrail
+    behavior ("It never executes deploys, rollbacks, or config changes.")
+    so the user sees the constraint up front.
 
-  incident_input = gr.Textbox(...)
-    Multi-line text input (lines=4) where Alex types the incident.
-    placeholder text gives a hint of the expected format.
+  incident_input = gr.Textbox(lines=4, ...)
+    Multi-line input where Alex types the incident description.
 
   submit_btn = gr.Button("Triage", variant="primary")
-    The blue submit button. variant="primary" makes it stand out visually.
 
   summary_output = gr.Markdown(label="Triage summary")
-    The output area. Gradio Markdown renders the LLM response with full
-    markdown formatting — headers, bullet points, bold text, code blocks.
+    Renders triage()'s return value with full markdown formatting.
 
   gr.Examples(examples=EXAMPLE_QUERIES, inputs=incident_input)
-    Renders the three pre-written example queries as clickable chips below
-    the input box. Clicking one populates incident_input with that text.
+    Renders the six example queries as clickable chips.
 
   submit_btn.click(fn=triage, inputs=incident_input, outputs=summary_output)
-    Wires the button click event to triage(). When clicked:
-      inputs=incident_input  → reads the textbox value and passes it as
-                               incident_description to triage()
-      outputs=summary_output → writes triage()'s return value into the
-                               markdown output area
-
   incident_input.submit(fn=triage, inputs=incident_input, outputs=summary_output)
-    Does the same thing but triggered by pressing Enter in the textbox.
-    Both wires point to the same triage() function so behaviour is identical.
+    Both the button and pressing Enter wire to the same triage() function.
 
 ---- MAIN BLOCK ----
 
   demo.launch(share=True)
-    Starts the Gradio web server on http://127.0.0.1:7860 and creates a
-    public gradio.live tunnel URL.
-
-    share=True is set because in some environments (e.g. PyCharm terminal,
-    remote servers) the browser cannot directly reach localhost. share=True
-    creates a Gradio-hosted tunnel so the UI is reachable from any browser
-    regardless of network configuration.
-
-    The tunnel URL is printed to the terminal when the app starts.
+    Starts the Gradio server on http://127.0.0.1:7860 and additionally
+    creates a public gradio.live tunnel URL (useful when the browser can't
+    reach localhost directly, e.g. some remote/IDE terminal setups). The
+    tunnel URL is printed to the terminal at startup.
 
 --------------------------------------------------------------------------------
   7. DATA FLOW IN PLAIN ENGLISH
 --------------------------------------------------------------------------------
 
-BEFORE THE APP STARTS (run once, or on corpus changes):
+BEFORE THE APP STARTS (run once, or whenever the corpus changes):
 
   1. python src/ingestion.py
-     - Reads all .md files from synthetic-data/runbooks/ and synthetic-data/postmorterms/
-     - Strips YAML frontmatter from each
-     - Splits each file on ## headers → 23 chunks total (7 runbook + 16 postmortems)
-     - Embeds each chunk using all-MiniLM-L6-v2 → 384-dim float vector per chunk
-     - Saves vectors + metadata to synthetic-data/vectorstore/ on disk
+     - Wipes synthetic-data/vectorstore/ and recreates it
+     - Loads the all-MiniLM-L6-v2 embedding model once
+     - For every FILE (any extension) in synthetic-data/real-runbooks/:
+         looks up its extension in REAL_RUNBOOK_EXTRACTORS, extracts plain
+         text with the matching function (pdfplumber for .pdf, python-docx
+         for .docx, plain read for .txt), or prints "SKIPPED" and moves on
+         if the extension isn't registered
+     - For every .md file in synthetic-data/postmorterms/:
+         strips YAML frontmatter, treats the rest as plain text
+     - Chunks ALL of the above (both corpora) with the same SemanticChunker
+       — splits wherever meaning shifts more than the 95th percentile of
+       pairwise sentence-embedding distance in that document; any resulting
+       chunk over 1500 chars gets a further paragraph/sentence/word split
+     - Embeds each chunk (384-dim vector) and saves vectors + metadata
+       (source filename, section label, format tag) to
+       synthetic-data/vectorstore/ on disk
+     - Prints a chunk count per file, then runs the three smoke-test
+       queries and prints their top-3 results for manual inspection
 
 WHEN THE APP STARTS:
 
   2. python src/app.py
      - Imports IncidentPilot → loads .env → GROQ_API_KEY in environment
-     - pilot = IncidentPilot():
-         loads system prompt from disk
-         creates ChatGroq client (connects to Groq API)
-         loads existing ChromaDB from synthetic-data/vectorstore/
-     - Gradio web server starts on port 7860
+     - pilot = IncidentPilot(): loads system prompt, creates the ChatGroq
+       client, opens the existing ChromaDB from synthetic-data/vectorstore/
+     - Gradio web server starts on port 7860 (+ a public tunnel URL)
 
 WHEN ALEX SUBMITS A QUERY:
 
   3. Browser sends the query text to Gradio's server
   4. Gradio calls triage(incident_description)
-  5. triage() calls pilot.query(incident_description)
-  6. query() calls retrieve(user_input):
-       - Embeds the query using all-MiniLM-L6-v2 → query vector
-       - ChromaDB computes cosine similarity between query vector and all 23 chunk vectors
-       - Returns top 3 most similar chunks as dicts
-  7. query() calls _format_context(chunks):
-       - Labels each chunk with [Source: file | Section: header]
-       - Joins all chunks with "---" separators
-  8. query() builds the augmented prompt:
-       SystemMessage: system_prompt.md (guardrail rules)
-       HumanMessage:  retrieved context + engineer's question
-  9. query() calls model.invoke(messages):
-       - Sends to Groq API (llama-3.3-70b-versatile)
-       - LLM reads the guardrail rules, the retrieved chunks, and the question
-       - LLM generates a cited triage summary
+  5. triage() calls pilot.query_with_trace(incident_description)
+  6. query_with_trace() calls _expand_query(user_input) — LLM CALL #1 (HyDE):
+       - Sends HYDE_PROMPT + the query to Groq
+       - Parses the response into up to 5 generated search queries
+       - Prepends the original query → up to 6 total queries
+  7. query_with_trace() calls _retrieve_with_queries(queries) — no LLM call:
+       - For EACH of the up to 6 queries: embeds it, runs Chroma similarity
+         search, keeps that query's own top 3 (ranked, per-query only)
+       - Merges all queries' results into one list, deduplicating by exact
+         chunk-content match — NOT re-ranked globally, NOT capped; order is
+         "query 1's top 3, then query 2's new ones, ..." (see Section 5 for
+         the full explanation of why position ≠ relevance here)
+  8. query_with_trace() calls _format_context(chunks) — no LLM call:
+       - Labels each chunk [Source: file | Section: header]
+       - Joins all chunks with "---", in the same unranked order from step 7
+  9. query_with_trace() builds the augmented prompt and message list:
+       SystemMessage: system_prompt.md (guardrail rules, tone, citation
+       requirements)
+       HumanMessage: retrieved context block + engineer's original question
+  10. query_with_trace() calls model.invoke(messages) — LLM CALL #2 (triage
+      synthesis):
+       - LLM reads the guardrail rules, the (unranked) retrieved chunks, and
+         the question
+       - LLM generates a cited triage summary, or a refusal if the query
+         asked for a production-mutating action
        - Returns response text
-  10. triage() returns the response text to Gradio
-  11. Gradio renders the response in the Markdown output area
+  11. triage() prints the HyDE queries and the response to the CONSOLE (not
+      the browser), then returns just the response string
+  12. Gradio renders the response text in the Markdown output area
 
 --------------------------------------------------------------------------------
-  8. DEPENDENCY NOTES
+  8. DEPENDENCY & OPERATIONAL NOTES
 --------------------------------------------------------------------------------
 
 The following version pins are required and non-obvious. Changing them
 without checking compatibility will likely break the app.
+
+  python-docx
+    Added to support the .docx files in synthetic-data/real-runbooks/
+    (currently cart_api_errors.docx). No pin currently required, but if a
+    future upgrade breaks extract_docx_text()'s use of
+    document.element.body.iterchildren() / docx.oxml.ns.qn(), pin it.
 
   torch==2.2.2
     Installed separately from https://download.pytorch.org/whl/cpu because
@@ -574,6 +743,18 @@ without checking compatibility will likely break the app.
   Python 3.11 required (not 3.12, not 3.13)
     PyTorch 2.2.2 CPU wheels are only published for Python 3.8–3.11.
     Use: /usr/local/opt/python@3.11/bin/python3.11 -m venv .venv
+
+  OPERATIONAL: HuggingFace offline mode
+    If `python src/ingestion.py` or `python src/app.py` appears to hang at
+    "Loading embedding model (all-MiniLM-L6-v2)...", it is very likely doing
+    an online HEAD-request freshness check against huggingface.co for a
+    model that is already cached locally, retrying with exponential backoff
+    on a slow/flaky connection — not an actual failure. Force offline mode
+    to skip the check and use the local cache directly:
+      HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 python src/ingestion.py
+      HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 python src/app.py
+    Only works if the model has already been downloaded at least once
+    without these flags set.
 
 ================================================================================
   END OF DOCUMENT

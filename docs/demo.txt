@@ -1,0 +1,64 @@
+Product
+----------
+
+Who uses this? SRE/On call engineer
+what will they use it for?  Triage issues
+How does it help them? Reduce time to traiege/resolve issues
+
+what is the problem they face currently?
+
+1. Knowledge is fragmented across tools
+ Runbooks live in Confluence etc., incident timelines live in Rootly/equivalent, fix notes live in Slack threads or Jira tickets.
+  An on-call engineer facing an alert has no single place to ask "has this happened before, and how did we fix it?"
+
+ Need to look at different information, spanning across different information systems
+    - Runbooks
+    - Postmorterms
+    - Code docs
+    - Logs
+    - Metrics Dashboards
+
+2. Format inconsistency. Runbooks aren't written to a standard format
+    — some are markdown checklists, some are PDFs from a vendor, some are Word docs written by whoever was on-call that week. Any tool that hard-codes parsing for one format breaks the moment a new team's runbook arrives in a different shape — which kills onboarding speed for new teams/orgs.
+
+3. Triage speed is the direct cost
+    For an enterprise, incident MTTR (mean time to resolution) isn't just an engineering metric — it's tied to SLAs, customer trust, and (for regulated industries) compliance exposure. Every minute spent searching instead of fixing is a minute of measurable business cost.
+
+
+DEMO
+------
+
+2 usecases
+
+Deploy/hotfix
+triage an issue
+
+Architecture / Flow diagram
+---------------------------
+https://claude.ai/code/artifact/7783f46b-e853-4116-883b-05f13637f495?via=auto_preview
+
+What did we build?
+Week 1 E2E flow - simple
+
+Support for multiple formats and multiple document types , multiple services
+- Enterprises will have runbooks/postmorterms acorss different tools - rootly, confluence etc
+- Runbooks might not follow the same standard/format
+- Might be in different file formats  - pdf , docs , mark down files
+
+Need to build generic application so that we dont need to code to support different formats as part of onboarding
+
+Chunking strategy
+------------------
+Mark down based chunking -> semantic based chunking + recursive splitting
+
+Query pre-processing to improve retrieval
+-----------------------------------------
+HyDE
+
+Marketing plan
+---------------
+
+How did we solve the above problem?
+Design choices - approaches, why did we go with this approach
+
+
