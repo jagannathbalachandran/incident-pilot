@@ -269,7 +269,7 @@ For unknown incident types, it pages the on-call engineer with a pre-populated d
 | Week | Deliverable | Dependencies |
 |---|---|---|
 | W1 | Service Knowledge Graph schema + Neo4j setup | Neo4j instance |
-| W2 | Multi-service metrics in Prometheus (`{service}` label) | Flask generator update |
+| W2 | Multi-service metrics in Prometheus (`{service}` label) | FastAPI generator update |
 | W3 | Per-service runbooks in RAG corpus | Content creation |
 | W4 | Grafana dashboards × 3 services | Dashboard provisioning |
 

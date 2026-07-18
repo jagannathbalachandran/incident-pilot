@@ -1,17 +1,22 @@
 # flask-generator/Dockerfile
-FROM python:3.11-slim
+FROM python:3.11-slim AS builder
 
 WORKDIR /app
 
-# Install system dependencies (none needed for this minimal setup)
+# Install uv
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
+
+# Install system dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
     gcc \
     curl \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy and install Python dependencies
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+# Copy dependency manifests
+COPY pyproject.toml .
+
+# Install dependencies (no dev dependencies in production)
+RUN uv sync --no-dev
 
 # Copy application code
 COPY config.py .
@@ -22,4 +27,4 @@ COPY app.py .
 
 EXPOSE 5000
 
-CMD ["python", "app.py"]
+CMD [".venv/bin/python", "app.py"]

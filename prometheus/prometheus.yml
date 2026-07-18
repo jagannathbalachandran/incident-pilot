@@ -1,7 +1,7 @@
 # prometheus/prometheus.yml
 #
 # Prometheus scrape configuration for the IncidentPilot monitoring stack.
-# Scrapes the Flask generator every 15 seconds on the internal Docker network.
+# Scrapes the FastAPI generator every 15 seconds on the internal Docker network.
 
 global:
   scrape_interval:     15s
@@ -25,7 +25,7 @@ scrape_configs:
     scrape_interval: 15s
     scrape_timeout:  10s
 
-    # Metrics path (Flask exposes /metrics)
+    # Metrics path (FastAPI exposes /metrics)
     metrics_path: /metrics
 
     # Service discovery: Docker Compose service name resolves via the

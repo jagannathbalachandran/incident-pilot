@@ -20,8 +20,8 @@ services:
     environment:
       - TICK_MODE=${TICK_MODE:-accelerated}
       - TICK_INTERVAL=${TICK_INTERVAL:-}
-      - FLASK_HOST=0.0.0.0
-      - FLASK_PORT=5000
+      - HOST=0.0.0.0
+      - PORT=5000
     logging:
       driver: loki
       options:
@@ -112,6 +112,41 @@ services:
     healthcheck:
       test: ["CMD", "wget", "-q", "--spider", "http://localhost:3000/api/health"]
       interval: 20s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+  # --------------------------------------------------------------------------
+  # IncidentPilot — AI Incident-Response Copilot (Gradio UI + Agent)
+  # --------------------------------------------------------------------------
+  # --------------------------------------------------------------------------
+  # IncidentPilot — AI Incident-Response Copilot (Gradio UI + Agent)
+  # --------------------------------------------------------------------------
+  incident-pilot:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: incident-pilot
+    ports:
+      - "7860:7860"
+    environment:
+      # Point to flask-generator's internal Docker hostname
+      - FLASK_API_URL=http://flask-generator:5000
+      - TOKENIZERS_PARALLELISM=false
+      # Required for LLM features — set GROQ_API_KEY in .env or shell env
+      - GROQ_API_KEY=${GROQ_API_KEY:-}
+    volumes:
+      # Mount the vector store from host so it persists across container restarts
+      # Run 'uv run python src/ingestion.py' first if directory is empty
+      - ./synthetic-data/vectorstore:/app/synthetic-data/vectorstore
+    networks:
+      - monitoring
+    depends_on:
+      flask-generator:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:7860/"]
+      interval: 30s
       timeout: 10s
       retries: 3
       start_period: 30s

@@ -1,13 +1,13 @@
 {
   "info": {
     "name": "IncidentPilot — Monitoring Stack APIs",
-    "description": "Complete Postman collection for the IncidentPilot monitoring stack.\n\nBase URLs:\n  Flask Generator — http://localhost:5001\n  Prometheus       — http://localhost:9090\n  Loki             — http://localhost:3100\n  Grafana          — http://localhost:3000 (admin / admin)\n  Gradio UI        — http://localhost:7860 (browser only, no REST API)\n\nUsage workflow:\n  1. Start the stack: docker compose up -d\n  2. Verify health with Flask /health → Prometheus /-/ready → Loki /ready → Grafana /api/health\n  3. Trigger an incident: POST /api/incidents/pool/trigger\n  4. Watch metrics change: GET /api/incidents/state (every 3s)\n  5. Query Prometheus for the latest metric values\n  6. Query Loki for application logs\n  7. Open Grafana dashboards (http://localhost:3000, admin/admin, \"Incidents\" folder)",
+    "description": "Complete Postman collection for the IncidentPilot monitoring stack.\n\nBase URLs:\n  FastAPI Generator — http://localhost:5001\n  Prometheus        — http://localhost:9090\n  Loki              — http://localhost:3100\n  Grafana           — http://localhost:3000 (admin / admin)\n  Gradio UI         — http://localhost:7860 (browser only, no REST API)\n\nUsage workflow:\n  1. Start the stack: docker compose up -d\n  2. Verify health with FastAPI /health -> Prometheus /-/ready -> Loki /ready -> Grafana /api/health\n  3. Trigger an incident: POST /api/incidents/pool/trigger\n  4. Watch metrics change: GET /api/incidents/state (every 3s)\n  5. Query Prometheus for the latest metric values\n  6. Query Loki for application logs\n  7. Open Grafana dashboards (http://localhost:3000, admin/admin, \"Incidents\" folder)\n\nFastAPI auto-generates OpenAPI documentation:\n  - Swagger UI: http://localhost:5001/docs\n  - ReDoc:      http://localhost:5001/redoc\n  - OpenAPI:    http://localhost:5001/openapi.json",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
     "_exporter_id": "IncidentPilot"
   },
   "variable": [
     {
-      "key": "flask_url",
+      "key": "api_url",
       "value": "http://localhost:5001",
       "type": "string"
     },
@@ -33,11 +33,20 @@
       "description": "Verify all 4 Docker services are running and responsive.",
       "item": [
         {
-          "name": "Flask Generator — /health",
+          "name": "FastAPI Generator — /health",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{api_url}}/health"
+            },
+            "description": "Returns the FastAPI generator's operational status and whether an incident is currently active."
+          },
           "event": [
             {
               "listen": "test",
               "script": {
+                "type": "text/javascript",
                 "exec": [
                   "pm.test(\"Status 200\", () => pm.response.to.have.status(200));",
                   "pm.test(\"Body has service field\", () => {",
@@ -47,38 +56,27 @@
                   "    pm.expect(json).to.have.property('request_id');",
                   "    pm.expect(json.request_id).to.match(/^[a-f0-9]{12}$/);",
                   "});",
-                  "",
-                  "// Print active incident if any",
-                  "const json = pm.response.json();",
-                  "const incident = json.active_incident;",
-                  "if (incident) {",
-                  "    console.log(`Active incident: ${incident}`);",
-                  "    pm.expect(json).to.have.property('active_incident');",
-                  "} else {",
-                  "    console.log('No active incident (baseline)');",
-                  "}"
-                ],
-                "type": "text/javascript"
+                  "pm.test(\"Response has X-Request-ID header\", () => {",
+                  "    pm.expect(pm.response.headers.get('X-Request-ID')).to.match(/^[a-f0-9]{12}$/);",
+                  "});"
+                ]
               }
             }
           ],
-          "request": {
-            "method": "GET",
-            "header": [],
-            "url": {
-              "raw": "{{flask_url}}/health",
-              "host": ["{{flask_url}}"],
-              "path": ["health"]
-            },
-            "description": "Returns the Flask generator's operational status and whether an incident is currently active."
-          },
           "response": [
             {
               "name": "No active incident",
               "status": "OK",
               "code": 200,
               "header": [
-                { "key": "Content-Type", "value": "application/json" }
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                },
+                {
+                  "key": "X-Request-ID",
+                  "value": "a1b2c3d4e5f6"
+                }
               ],
               "body": "{\n  \"status\": \"ok\",\n  \"service\": \"flask-generator\",\n  \"active_incident\": null,\n  \"request_id\": \"a1b2c3d4e5f6\"\n}"
             },
@@ -86,97 +84,78 @@
               "name": "Pool incident active",
               "status": "OK",
               "code": 200,
-              "header": [
-                { "key": "Content-Type", "value": "application/json" }
-              ],
+              "header": [],
               "body": "{\n  \"status\": \"ok\",\n  \"service\": \"flask-generator\",\n  \"active_incident\": \"pool\",\n  \"request_id\": \"a1b2c3d4e5f6\"\n}"
             }
           ]
         },
         {
           "name": "Prometheus — /-/ready",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{prometheus_url}}/-/ready"
+            },
+            "description": "Prometheus readiness endpoint. Returns 200 when Prometheus is ready to accept queries."
+          },
           "event": [
             {
               "listen": "test",
               "script": {
+                "type": "text/javascript",
                 "exec": [
                   "pm.test(\"Status 200\", () => pm.response.to.have.status(200));",
                   "pm.test(\"Body contains 'Prometheus Ready'\", () => {",
                   "    pm.expect(pm.response.text()).to.include('Prometheus');",
                   "});"
-                ],
-                "type": "text/javascript"
+                ]
               }
             }
           ],
-          "request": {
-            "method": "GET",
-            "header": [],
-            "url": {
-              "raw": "{{prometheus_url}}/-/ready",
-              "host": ["{{prometheus_url}}"],
-              "path": ["-/ready"]
-            },
-            "description": "Prometheus readiness endpoint. Returns 200 when Prometheus is ready to accept queries."
-          },
           "response": [
             {
               "name": "Prometheus Ready",
               "status": "OK",
               "code": 200,
+              "header": [],
               "body": "Prometheus is Ready.\n"
             }
           ]
         },
         {
           "name": "Loki — /ready",
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "exec": [
-                  "pm.test(\"Status 200\", () => pm.response.to.have.status(200));"
-                ],
-                "type": "text/javascript"
-              }
-            }
-          ],
           "request": {
             "method": "GET",
             "header": [],
             "url": {
-              "raw": "{{loki_url}}/ready",
-              "host": ["{{loki_url}}"],
-              "path": ["ready"]
+              "raw": "{{loki_url}}/ready"
             },
             "description": "Loki readiness endpoint. Returns 200 when Loki is ready to accept logs and queries."
           },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status 200\", () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ],
           "response": [
             {
               "name": "Loki Ready",
               "status": "OK",
               "code": 200,
+              "header": [],
               "body": "Ready\n"
             }
           ]
         },
         {
           "name": "Grafana — /api/health",
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "exec": [
-                  "pm.test(\"Status 200\", () => pm.response.to.have.status(200));",
-                  "pm.test(\"Body has database field\", () => {",
-                  "    const json = pm.response.json();",
-                  "    pm.expect(json).to.have.property('database', 'ok');",
-                  "});"
-                ],
-                "type": "text/javascript"
-              }
-            }
-          ],
           "request": {
             "method": "GET",
             "header": [
@@ -187,17 +166,31 @@
               }
             ],
             "url": {
-              "raw": "{{grafana_url}}/api/health",
-              "host": ["{{grafana_url}}"],
-              "path": ["api", "health"]
+              "raw": "{{grafana_url}}/api/health"
             },
             "description": "Grafana health check. Requires Basic Auth (admin / admin)."
           },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status 200\", () => pm.response.to.have.status(200));",
+                  "pm.test(\"Body has database field\", () => {",
+                  "    const json = pm.response.json();",
+                  "    pm.expect(json).to.have.property('database', 'ok');",
+                  "});"
+                ]
+              }
+            }
+          ],
           "response": [
             {
               "name": "Grafana Healthy",
               "status": "OK",
               "code": 200,
+              "header": [],
               "body": "{\n  \"database\": \"ok\",\n  \"version\": \"11.2.0\"\n}"
             }
           ]
@@ -205,31 +198,11 @@
       ]
     },
     {
-      "name": "⚡ 2. Incident Simulator (Flask)",
-      "description": "Trigger, monitor, and resolve simulated production incidents in real-time.",
+      "name": "⚡ 2. Incident Simulator (FastAPI)",
+      "description": "Trigger, monitor, and resolve simulated production incidents via the FastAPI generator.",
       "item": [
         {
           "name": "Trigger — Pool Exhaustion",
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "exec": [
-                  "pm.test(\"Status 200\", () => pm.response.to.have.status(200));",
-                  "pm.test(\"Scenario started\", () => {",
-                  "    const json = pm.response.json();",
-                  "    pm.expect(json).to.have.property('status', 'started');",
-                  "    pm.expect(json).to.have.property('kind', 'pool');",
-                  "    pm.expect(json).to.have.property('phase');",
-                  "    pm.expect(json.phase).to.match(/climbing|active/);",
-                  "    pm.expect(json).to.have.property('request_id');",
-                  "    pm.expect(json.request_id).to.match(/^[a-f0-9]{12}$/);",
-                  "});"
-                ],
-                "type": "text/javascript"
-              }
-            }
-          ],
           "request": {
             "method": "POST",
             "header": [
@@ -239,32 +212,77 @@
                 "type": "text"
               }
             ],
+            "url": {
+              "raw": "{{api_url}}/api/incidents/pool/trigger"
+            },
             "body": {
               "mode": "raw",
               "raw": "{\n  \"auto_resolve\": true\n}"
             },
-            "url": {
-              "raw": "{{flask_url}}/api/incidents/pool/trigger",
-              "host": ["{{flask_url}}"],
-              "path": ["api", "incidents", "pool", "trigger"]
-            },
-            "description": "Start a Postgres connection-pool exhaustion scenario.\n\nLifecycle: climbing (15s) → plateau (15s) → recovering (10s) → auto-resolve\n\nMetric behaviour:\n  - active_connections climbs from 118 to 200\n  - p99_latency rises from 380ms to ~1830ms\n  - error_rate climbs from 0.05% to ~6.1%\n\nPool error logs ({\"level\": \"ERROR\", \"message\": \"could not obtain connection...\"}) appear when connections >= 190."
+            "description": "Start a Postgres connection-pool exhaustion scenario.\n\nLifecycle: climbing (15s) → plateau (15s) → recovering (10s) → auto-resolve"
           },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status 200\", () => pm.response.to.have.status(200));",
+                  "pm.test(\"Scenario started\", () => {",
+                  "    const json = pm.response.json();",
+                  "    pm.expect(json).to.have.property('status', 'started');",
+                  "    pm.expect(json).to.have.property('kind', 'pool');",
+                  "    pm.expect(json).to.have.property('phase');",
+                  "    pm.expect(json).to.have.property('request_id');",
+                  "    pm.expect(json.request_id).to.match(/^[a-f0-9]{12}$/);",
+                  "});",
+                  "pm.test(\"Response has X-Request-ID header\", () => {",
+                  "    pm.expect(pm.response.headers.get('X-Request-ID')).to.match(/^[a-f0-9]{12}$/);",
+                  "});"
+                ]
+              }
+            }
+          ],
           "response": [
             {
               "name": "Pool started",
               "status": "OK",
               "code": 200,
+              "header": [
+                {
+                  "key": "X-Request-ID",
+                  "value": "a1b2c3d4e5f6"
+                }
+              ],
               "body": "{\n  \"status\": \"started\",\n  \"kind\": \"pool\",\n  \"phase\": \"climbing\",\n  \"tick_count\": 0,\n  \"request_id\": \"a1b2c3d4e5f6\"\n}"
             }
           ]
         },
         {
           "name": "Trigger — Cache Failover",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{api_url}}/api/incidents/cache/trigger"
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"auto_resolve\": true\n}"
+            },
+            "description": "Start a Redis cache node failover scenario.\n\nLifecycle: climbing → failover (6s) → warming (12s) → auto-resolve\n\nKey difference from pool: NO error spike during cache incidents."
+          },
           "event": [
             {
               "listen": "test",
               "script": {
+                "type": "text/javascript",
                 "exec": [
                   "pm.test(\"Status 200\", () => pm.response.to.have.status(200));",
                   "pm.test(\"Scenario started\", () => {",
@@ -273,12 +291,31 @@
                   "    pm.expect(json).to.have.property('kind', 'cache');",
                   "    pm.expect(json).to.have.property('request_id');",
                   "    pm.expect(json.request_id).to.match(/^[a-f0-9]{12}$/);",
+                  "});",
+                  "pm.test(\"Response has X-Request-ID header\", () => {",
+                  "    pm.expect(pm.response.headers.get('X-Request-ID')).to.match(/^[a-f0-9]{12}$/);",
                   "});"
-                ],
-                "type": "text/javascript"
+                ]
               }
             }
           ],
+          "response": [
+            {
+              "name": "Cache started",
+              "status": "OK",
+              "code": 200,
+              "header": [
+                {
+                  "key": "X-Request-ID",
+                  "value": "a1b2c3d4e5f6"
+                }
+              ],
+              "body": "{\n  \"status\": \"started\",\n  \"kind\": \"cache\",\n  \"phase\": \"climbing\",\n  \"tick_count\": 0,\n  \"request_id\": \"a1b2c3d4e5f6\"\n}"
+            }
+          ]
+        },
+        {
+          "name": "Trigger — Fraud Scoring Outage",
           "request": {
             "method": "POST",
             "header": [
@@ -288,32 +325,20 @@
                 "type": "text"
               }
             ],
+            "url": {
+              "raw": "{{api_url}}/api/incidents/fraud/trigger"
+            },
             "body": {
               "mode": "raw",
               "raw": "{\n  \"auto_resolve\": true\n}"
             },
-            "url": {
-              "raw": "{{flask_url}}/api/incidents/cache/trigger",
-              "host": ["{{flask_url}}"],
-              "path": ["api", "incidents", "cache", "trigger"]
-            },
-            "description": "Start a Redis cache node failover scenario.\n\nLifecycle: failover (6s) → warming (12s) → auto-resolve\n\nMetric behaviour:\n  - cache_hit_ratio drops from 0.95 to 0.41 (step change)\n  - p99_latency rises up to ~930ms (cache misses hit DB directly)\n  - error_rate stays at BASELINE (0.05%) — requests still succeed, just slower\n\nKey difference from pool: NO error spike during cache incidents."
+            "description": "Start a fraud-scoring-service outage scenario.\n\nLifecycle: active (20s) → auto-resolve\n\nMetric behaviour:\n  - error_rate spikes to 10-15%\n  - p99_latency jumps to ~836ms (2.2x baseline)"
           },
-          "response": [
-            {
-              "name": "Cache started",
-              "status": "OK",
-              "code": 200,
-              "body": "{\n  \"status\": \"started\",\n  \"kind\": \"cache\",\n  \"phase\": \"climbing\",\n  \"tick_count\": 0,\n  \"request_id\": \"a1b2c3d4e5f6\"\n}"
-            }
-          ]
-        },
-        {
-          "name": "Trigger — Fraud Scoring Outage",
           "event": [
             {
               "listen": "test",
               "script": {
+                "type": "text/javascript",
                 "exec": [
                   "pm.test(\"Status 200\", () => pm.response.to.have.status(200));",
                   "pm.test(\"Scenario started\", () => {",
@@ -323,86 +348,118 @@
                   "    pm.expect(json).to.have.property('phase', 'active');",
                   "    pm.expect(json).to.have.property('request_id');",
                   "    pm.expect(json.request_id).to.match(/^[a-f0-9]{12}$/);",
+                  "});",
+                  "pm.test(\"Response has X-Request-ID header\", () => {",
+                  "    pm.expect(pm.response.headers.get('X-Request-ID')).to.match(/^[a-f0-9]{12}$/);",
                   "});"
-                ],
-                "type": "text/javascript"
+                ]
               }
             }
           ],
-          "request": {
-            "method": "POST",
-            "header": [
-              {
-                "key": "Content-Type",
-                "value": "application/json",
-                "type": "text"
-              }
-            ],
-            "body": {
-              "mode": "raw",
-              "raw": "{\n  \"auto_resolve\": true\n}"
-            },
-            "url": {
-              "raw": "{{flask_url}}/api/incidents/fraud/trigger",
-              "host": ["{{flask_url}}"],
-              "path": ["api", "incidents", "fraud", "trigger"]
-            },
-            "description": "Start a fraud-scoring-service outage scenario.\n\nLifecycle: active (20s) → auto-resolve\n\nMetric behaviour:\n  - error_rate spikes to 10-15% (all 503s from fraud-scoring-svc)\n  - p99_latency jumps to ~836ms (2.2x baseline)\n  - active_connections and cache_hit_ratio stay at baseline\n\nFraud error logs: {\"level\": \"ERROR\", \"message\": \"fraud-scoring-svc unavailable\"}"
-          },
           "response": [
             {
               "name": "Fraud started",
               "status": "OK",
               "code": 200,
+              "header": [
+                {
+                  "key": "X-Request-ID",
+                  "value": "a1b2c3d4e5f6"
+                }
+              ],
               "body": "{\n  \"status\": \"started\",\n  \"kind\": \"fraud\",\n  \"phase\": \"active\",\n  \"tick_count\": 0,\n  \"request_id\": \"a1b2c3d4e5f6\"\n}"
             }
           ]
         },
         {
           "name": "Trigger — Random Scenario",
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "exec": [
-                  "pm.test(\"Status 200\", () => pm.response.to.have.status(200));",
-                  "pm.test(\"Scenario started\", () => {",
-                  "    const json = pm.response.json();",
-                  "    pm.expect(json).to.have.property('status', 'started');",
-                  "    pm.expect(['pool', 'cache', 'fraud']).to.include(json.kind);",
-                  "    pm.expect(json).to.have.property('request_id');",
-                  "    pm.expect(json.request_id).to.match(/^[a-f0-9]{12}$/);",
-                  "});"
-                ],
-                "type": "text/javascript"
-              }
-            }
-          ],
           "request": {
             "method": "POST",
             "header": [],
             "url": {
-              "raw": "{{flask_url}}/api/incidents/trigger-random",
-              "host": ["{{flask_url}}"],
-              "path": ["api", "incidents", "trigger-random"]
+              "raw": "{{api_url}}/api/incidents/trigger-random"
             },
             "description": "Start a randomly-selected scenario (pool, cache, or fraud). Useful for demo variety."
           },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status 200\", () => pm.response.to.have.status(200));",
+                  "pm.test(\"Scenario started\", () => {",
+                  "    const json = pm.response.json();",
+                  "    pm.expect(['pool', 'cache', 'fraud']).to.include(json.kind);",
+                  "    pm.expect(json).to.have.property('request_id');",
+                  "    pm.expect(json.request_id).to.match(/^[a-f0-9]{12}$/);",
+                  "});"
+                ]
+              }
+            }
+          ],
           "response": [
             {
               "name": "Random started (example: pool)",
               "status": "OK",
               "code": 200,
+              "header": [],
               "body": "{\n  \"status\": \"started\",\n  \"kind\": \"pool\",\n  \"phase\": \"climbing\",\n  \"tick_count\": 0,\n  \"request_id\": \"a1b2c3d4e5f6\"\n}"
             }
           ]
         },
         {
-          "name": "Resolve — by Kind",
+          "name": "Trigger — Invalid Kind (Error Test)",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{api_url}}/api/incidents/invalid_kind/trigger"
+            },
+            "description": "Test error handling by triggering an invalid incident kind. Returns 400 with an error message."
+          },
           "event": [
             {
               "listen": "test",
               "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status 400\", () => pm.response.to.have.status(400));",
+                  "pm.test(\"Returns error message\", () => {",
+                  "    const json = pm.response.json();",
+                  "    pm.expect(json).to.have.property('error');",
+                  "    pm.expect(json.error).to.include('unknown incident kind');",
+                  "    pm.expect(json).to.have.property('request_id');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "response": [
+            {
+              "name": "Error response",
+              "status": "Bad Request",
+              "code": 400,
+              "header": [],
+              "body": "{\n  \"error\": \"unknown incident kind 'invalid_kind'. Valid: ['cache', 'fraud', 'pool']\",\n  \"request_id\": \"a1b2c3d4e5f6\"\n}"
+            }
+          ]
+        },
+        {
+          "name": "Resolve — by Kind",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{api_url}}/api/incidents/pool/resolve"
+            },
+            "description": "Force-resolve the active incident by kind name (pool/cache/fraud)."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
                 "exec": [
                   "pm.test(\"Status 200\", () => pm.response.to.have.status(200));",
                   "pm.test(\"Incident resolved\", () => {",
@@ -414,43 +471,51 @@
                   "    }",
                   "    pm.expect(json).to.have.property('request_id');",
                   "    pm.expect(json.request_id).to.match(/^[a-f0-9]{12}$/);",
+                  "});",
+                  "pm.test(\"Response has X-Request-ID header\", () => {",
+                  "    pm.expect(pm.response.headers.get('X-Request-ID')).to.match(/^[a-f0-9]{12}$/);",
                   "});"
-                ],
-                "type": "text/javascript"
+                ]
               }
             }
           ],
-          "request": {
-            "method": "POST",
-            "header": [],
-            "url": {
-              "raw": "{{flask_url}}/api/incidents/pool/resolve",
-              "host": ["{{flask_url}}"],
-              "path": ["api", "incidents", "pool", "resolve"]
-            },
-            "description": "Force-resolve the active incident. Use the kind name (pool/cache/fraud) or 'current' to resolve whatever is running.\n\nReturns:\n  - {\"status\": \"resolved\", \"kind\": \"pool\", \"phase\": \"resolved\"} — when matched\n  - {\"status\": \"no_active_incident\"} — when no incident is running\n  - {\"status\": \"no_active_incident\", \"expected\": \"cache\", \"active\": \"pool\"} — kind mismatch"
-          },
           "response": [
             {
               "name": "Resolved",
               "status": "OK",
               "code": 200,
+              "header": [
+                {
+                  "key": "X-Request-ID",
+                  "value": "a1b2c3d4e5f6"
+                }
+              ],
               "body": "{\n  \"status\": \"resolved\",\n  \"kind\": \"pool\",\n  \"phase\": \"resolved\",\n  \"request_id\": \"a1b2c3d4e5f6\"\n}"
             },
             {
               "name": "No active incident",
               "status": "OK",
               "code": 200,
+              "header": [],
               "body": "{\n  \"status\": \"no_active_incident\",\n  \"request_id\": \"a1b2c3d4e5f6\"\n}"
             }
           ]
         },
         {
           "name": "Resolve — Current (any kind)",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{api_url}}/api/incidents/current/resolve"
+            },
+            "description": "Convenience endpoint: force-resolve the active incident regardless of kind."
+          },
           "event": [
             {
               "listen": "test",
               "script": {
+                "type": "text/javascript",
                 "exec": [
                   "pm.test(\"Status 200\", () => pm.response.to.have.status(200));",
                   "pm.test(\"Incident resolved\", () => {",
@@ -463,45 +528,44 @@
                   "    pm.expect(json).to.have.property('request_id');",
                   "    pm.expect(json.request_id).to.match(/^[a-f0-9]{12}$/);",
                   "});"
-                ],
-                "type": "text/javascript"
+                ]
               }
             }
           ],
-          "request": {
-            "method": "POST",
-            "header": [],
-            "url": {
-              "raw": "{{flask_url}}/api/incidents/current/resolve",
-              "host": ["{{flask_url}}"],
-              "path": ["api", "incidents", "current", "resolve"]
-            },
-            "description": "Convenience endpoint: force-resolve the active incident regardless of kind.\n\nReturns:\n  - {\"status\": \"resolved\", \"kind\": \"pool\", \"phase\": \"resolved\", \"request_id\": \"...\"} — when resolved\n  - {\"status\": \"no_active_incident\", \"request_id\": \"...\"} — when no incident is running"
-          },
           "response": [
             {
               "name": "Resolved",
               "status": "OK",
               "code": 200,
+              "header": [],
               "body": "{\n  \"status\": \"resolved\",\n  \"kind\": \"pool\",\n  \"phase\": \"resolved\",\n  \"request_id\": \"a1b2c3d4e5f6\"\n}"
             },
             {
               "name": "No active incident",
               "status": "OK",
               "code": 200,
+              "header": [],
               "body": "{\n  \"status\": \"no_active_incident\",\n  \"request_id\": \"a1b2c3d4e5f6\"\n}"
             }
           ]
         },
         {
           "name": "Get Incident State",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{api_url}}/api/incidents/state"
+            },
+            "description": "Get the current incident state with metrics snapshot."
+          },
           "event": [
             {
               "listen": "test",
               "script": {
+                "type": "text/javascript",
                 "exec": [
                   "pm.test(\"Status 200\", () => pm.response.to.have.status(200));",
-                  "",
                   "const json = pm.response.json();",
                   "if (json.kind !== 'none') {",
                   "    pm.test(\"Active incident has required fields\", () => {",
@@ -512,50 +576,49 @@
                   "        pm.expect(json).to.have.property('error_rate_pct');",
                   "        pm.expect(json).to.have.property('active_connections');",
                   "        pm.expect(json).to.have.property('request_id');",
-                  "        pm.expect(json.request_id).to.match(/^[a-f0-9]{12}$/);",
                   "    });",
-                  "    console.log(`Incident: ${json.kind} | Phase: ${json.phase} | Tick: ${json.tick_count}`);",
-                  "    console.log(`Metrics: p99=${json.p99_latency_ms}ms err=${json.error_rate_pct}% conns=${json.active_connections}`);",
-                  "} else {",
-                  "    console.log('No active incident');",
-                  "    console.log(`request_id: ${json.request_id}`);",
                   "}"
-                ],
-                "type": "text/javascript"
+                ]
               }
             }
           ],
-          "request": {
-            "method": "GET",
-            "header": [],
-            "url": {
-              "raw": "{{flask_url}}/api/incidents/state",
-              "host": ["{{flask_url}}"],
-              "path": ["api", "incidents", "state"]
-            },
-            "description": "Get the current incident state. Returns current metrics snapshot.\n\nActive incident example:\n{\n  \"kind\": \"pool\",\n  \"phase\": \"climbing\",\n  \"phase_progress\": 0.5,\n  \"tick_count\": 7,\n  \"p99_latency_ms\": 1082.5,\n  \"error_rate_pct\": 2.96,\n  \"active_connections\": 158,\n  \"cache_hit_ratio\": 0.951,\n  \"auto_resolve\": true,\n  \"request_id\": \"a1b2c3d4e5f6\"\n}\n\nNo incident example:\n{\n  \"kind\": \"none\",\n  \"phase\": \"none\",\n  \"phase_progress\": 0,\n  \"tick_count\": 0,\n  \"p99_latency_ms\": 380.0,\n  \"error_rate_pct\": 0.05,\n  \"active_connections\": 118,\n  \"cache_hit_ratio\": 0.95,\n  \"auto_resolve\": true,\n  \"request_id\": \"a1b2c3d4e5f6\"\n}"
-          },
           "response": [
             {
               "name": "Pool incident active (climbing)",
               "status": "OK",
               "code": 200,
+              "header": [
+                {
+                  "key": "X-Request-ID",
+                  "value": "a1b2c3d4e5f6"
+                }
+              ],
               "body": "{\n  \"kind\": \"pool\",\n  \"phase\": \"climbing\",\n  \"phase_progress\": 0.4,\n  \"tick_count\": 6,\n  \"p99_latency_ms\": 984.6,\n  \"error_rate_pct\": 2.31,\n  \"active_connections\": 150,\n  \"cache_hit_ratio\": 0.952,\n  \"auto_resolve\": true,\n  \"request_id\": \"a1b2c3d4e5f6\"\n}"
             },
             {
               "name": "Baseline (no incident)",
               "status": "OK",
               "code": 200,
+              "header": [],
               "body": "{\n  \"kind\": \"none\",\n  \"phase\": \"none\",\n  \"phase_progress\": 0.0,\n  \"tick_count\": 0,\n  \"p99_latency_ms\": 380.0,\n  \"error_rate_pct\": 0.05,\n  \"active_connections\": 118,\n  \"cache_hit_ratio\": 0.95,\n  \"auto_resolve\": true,\n  \"request_id\": \"a1b2c3d4e5f6\"\n}"
             }
           ]
         },
         {
-          "name": "Prometheus Metrics (raw)",
+          "name": "FastAPI Prometheus Metrics (raw)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{api_url}}/metrics"
+            },
+            "description": "Prometheus scrape endpoint in Prometheus plain-text format.\n\nThe /metrics endpoint does NOT include X-Request-ID header."
+          },
           "event": [
             {
               "listen": "test",
               "script": {
+                "type": "text/javascript",
                 "exec": [
                   "pm.test(\"Status 200\", () => pm.response.to.have.status(200));",
                   "pm.test(\"Content-Type is text/plain\", () => {",
@@ -568,22 +631,72 @@
                   "    pm.expect(body).to.include('checkout_active_connections');",
                   "    pm.expect(body).to.include('checkout_max_connections');",
                   "    pm.expect(body).to.include('checkout_cache_hit_ratio');",
+                  "});",
+                  "pm.test(\"Response does NOT have X-Request-ID (plain text)\", () => {",
+                  "    pm.expect(pm.response.headers.get('X-Request-ID')).to.be.null;",
                   "});"
-                ],
-                "type": "text/javascript"
+                ]
               }
             }
-          ],
+          ]
+        },
+        {
+          "name": "FastAPI OpenAPI — Swagger UI",
           "request": {
             "method": "GET",
             "header": [],
             "url": {
-              "raw": "{{flask_url}}/metrics",
-              "host": ["{{flask_url}}"],
-              "path": ["metrics"]
+              "raw": "{{api_url}}/docs"
             },
-            "description": "Prometheus scrape endpoint in Prometheus plain-text format. This is what Prometheus consumes.\n\nExample response line:\n  checkout_p99_latency_ms{service=\"checkout-api\"} 1486.2"
+            "description": "FastAPI auto-generates Swagger UI documentation at /docs."
           }
+        },
+        {
+          "name": "FastAPI OpenAPI — ReDoc",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{api_url}}/redoc"
+            },
+            "description": "FastAPI auto-generates ReDoc documentation at /redoc."
+          }
+        },
+        {
+          "name": "FastAPI OpenAPI — JSON Spec",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{api_url}}/openapi.json"
+            },
+            "description": "FastAPI auto-generates the OpenAPI 3.0 JSON specification at /openapi.json."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status 200\", () => pm.response.to.have.status(200));",
+                  "pm.test(\"Valid OpenAPI spec\", () => {",
+                  "    const json = pm.response.json();",
+                  "    pm.expect(json).to.have.property('openapi');",
+                  "    pm.expect(json.info).to.have.property('title', 'Incident Generator');",
+                  "    pm.expect(json.info).to.have.property('version', '3.0.0');",
+                  "    pm.expect(json).to.have.property('paths');",
+                  "    const paths = Object.keys(json.paths);",
+                  "    pm.expect(paths).to.include('/health');",
+                  "    pm.expect(paths).to.include('/metrics');",
+                  "    pm.expect(paths).to.include('/api/incidents/{kind}/trigger');",
+                  "    pm.expect(paths).to.include('/api/incidents/{kind}/resolve');",
+                  "    pm.expect(paths).to.include('/api/incidents/trigger-random');",
+                  "    pm.expect(paths).to.include('/api/incidents/state');",
+                  "});"
+                ]
+              }
+            }
+          ]
         }
       ]
     },
@@ -592,22 +705,20 @@
       "description": "Query the Prometheus time-series database directly for metric values.",
       "item": [
         {
-          "name": "Query — All Checkout Metrics (range)",
-          "event": [
-            {
-              "listen": "prerequest",
-              "script": {
-                "exec": [
-                  "const now = Math.floor(Date.now() / 1000);",
-                  "pm.collectionVariables.set('start_ts', (now - 900).toString());",
-                  "pm.collectionVariables.set('end_ts', now.toString());"
-                ],
-                "type": "text/javascript"
-              }
+          "name": "Query — All Checkout Metrics (label matcher regex)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{prometheus_url}}/api/v1/query_range?query={__name__%3D~%22checkout_.*%22,service%3D%22checkout-api%22}&start={{start_ts}}&end={{end_ts}}&step=60"
             },
+            "description": "Query all checkout-api metrics using a PromQL label matcher regex. More efficient than or-chaining."
+          },
+          "event": [
             {
               "listen": "test",
               "script": {
+                "type": "text/javascript",
                 "exec": [
                   "pm.test(\"Status 200\", () => pm.response.to.have.status(200));",
                   "pm.test(\"Response has data.result array\", () => {",
@@ -615,59 +726,18 @@
                   "    pm.expect(json).to.have.property('status', 'success');",
                   "    pm.expect(json.data).to.have.property('result');",
                   "    pm.expect(json.data.result.length).to.be.at.least(1);",
-                  "});",
-                  "",
-                  "const results = pm.response.json().data.result;",
-                  "results.forEach(series => {",
-                  "    const name = series.metric.__name__;",
-                  "    const values = series.values;",
-                  "    if (values && values.length > 0) {",
-                  "        const latest = values[values.length - 1][1];",
-                  "        console.log(`${name}: ${latest} (latest of ${values.length} points)`);",
-                  "    }",
                   "});"
-                ],
-                "type": "text/javascript"
+                ]
               }
             }
           ],
-          "request": {
-            "method": "GET",
-            "header": [],
-            "url": {
-              "raw": "{{prometheus_url}}/api/v1/query_range?query=checkout_p99_latency_ms{service%3D\"checkout-api\"}%20or%20checkout_error_rate_pct{service%3D\"checkout-api\"}%20or%20checkout_active_connections{service%3D\"checkout-api\"}&start={{start_ts}}&end={{end_ts}}&step=60",
-              "host": ["{{prometheus_url}}"],
-              "path": ["api", "v1", "query_range"],
-              "query": [
-                {
-                  "key": "query",
-                  "value": "checkout_p99_latency_ms{service=\"checkout-api\"} or checkout_error_rate_pct{service=\"checkout-api\"} or checkout_active_connections{service=\"checkout-api\"}",
-                  "encode": true
-                },
-                {
-                  "key": "start",
-                  "value": "{{start_ts}}",
-                  "description": "Start timestamp (Unix epoch seconds). Use Collection Variable: set in Pre-request Script."
-                },
-                {
-                  "key": "end",
-                  "value": "{{end_ts}}",
-                  "description": "End timestamp (Unix epoch seconds)."
-                },
-                {
-                  "key": "step",
-                  "value": "60"
-                }
-              ]
-            },
-            "description": "Query all 3 key checkout-api metrics in a single PromQL query (or-chained).\n\nNote: Set {{start_ts}} and {{end_ts}} collection variables to Unix epoch timestamps.\nAdd a Pre-request Script to auto-set them:\n  pm.collectionVariables.set('start_ts', Math.floor(Date.now()/1000) - 900);\n  pm.collectionVariables.set('end_ts', Math.floor(Date.now()/1000));\n\nReturns JSON with all metric time-series data."
-          },
           "response": [
             {
               "name": "Example response",
               "status": "OK",
               "code": 200,
-              "body": "{\n  \"status\": \"success\",\n  \"data\": {\n    \"resultType\": \"matrix\",\n    \"result\": [\n      {\n        \"metric\": { \"__name__\": \"checkout_p99_latency_ms\", \"service\": \"checkout-api\" },\n        \"values\": [[1700000000, \"380.5\"], [1700000060, \"1486.2\"]]\n      }\n    ]\n  }\n}"
+              "header": [],
+              "body": "{\n  \"status\": \"success\",\n  \"data\": {\n    \"resultType\": \"matrix\",\n    \"result\": [{\n      \"metric\": {\"__name__\": \"checkout_p99_latency_ms\", \"service\": \"checkout-api\"},\n      \"values\": [[1700000000, \"380.5\"], [1700000060, \"1486.2\"]]\n    }]\n  }\n}"
             }
           ]
         },
@@ -677,16 +747,7 @@
             "method": "GET",
             "header": [],
             "url": {
-              "raw": "{{prometheus_url}}/api/v1/query?query=checkout_p99_latency_ms{service%3D\"checkout-api\"}",
-              "host": ["{{prometheus_url}}"],
-              "path": ["api", "v1", "query"],
-              "query": [
-                {
-                  "key": "query",
-                  "value": "checkout_p99_latency_ms{service=\"checkout-api\"}",
-                  "encode": true
-                }
-              ]
+              "raw": "{{prometheus_url}}/api/v1/query?query=checkout_p99_latency_ms{service%3D\"checkout-api\"}"
             },
             "description": "Get the current (instant) value of a single metric. Useful for quick checks."
           },
@@ -695,7 +756,8 @@
               "name": "Result",
               "status": "OK",
               "code": 200,
-              "body": "{\n  \"status\": \"success\",\n  \"data\": {\n    \"resultType\": \"vector\",\n    \"result\": [\n      {\n        \"metric\": { \"__name__\": \"checkout_p99_latency_ms\", \"service\": \"checkout-api\" },\n        \"value\": [1700000000, \"1486.2\"]\n      }\n    ]\n  }\n}"
+              "header": [],
+              "body": "{\n  \"status\": \"success\",\n  \"data\": {\n    \"resultType\": \"vector\",\n    \"result\": [{\n      \"metric\": {\"__name__\": \"checkout_p99_latency_ms\", \"service\": \"checkout-api\"},\n      \"value\": [1700000000, \"1486.2\"]\n    }]\n  }\n}"
             }
           ]
         },
@@ -705,9 +767,7 @@
             "method": "GET",
             "header": [],
             "url": {
-              "raw": "{{prometheus_url}}/api/v1/targets",
-              "host": ["{{prometheus_url}}"],
-              "path": ["api", "v1", "targets"]
+              "raw": "{{prometheus_url}}/api/v1/targets"
             },
             "description": "Check Prometheus scrape target status. Shows which endpoints Prometheus is scraping and their health.\n\nLook for: target 'flask-generator:5000' with health='up'."
           }
@@ -720,91 +780,37 @@
       "item": [
         {
           "name": "Query — All Logs (15m window)",
-          "event": [
-            {
-              "listen": "prerequest",
-              "script": {
-                "exec": [
-                  "const nowNs = Date.now() * 1_000_000;",
-                  "const startNs = nowNs - 15 * 60 * 1_000_000_000;",
-                  "pm.collectionVariables.set('start_ts_ns', startNs.toString());",
-                  "pm.collectionVariables.set('end_ts_ns', nowNs.toString());"
-                ],
-                "type": "text/javascript"
-              }
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{loki_url}}/loki/api/v1/query_range?query={service%3D\"checkout-api\"}&start={{start_ts_ns}}&end={{end_ts_ns}}&limit=100"
             },
+            "description": "Fetch log lines from Loki for the checkout-api service.\n\nLoki uses NANOSECOND timestamps.\n\nAdd a Pre-request Script to auto-set timestamps."
+          },
+          "event": [
             {
               "listen": "test",
               "script": {
+                "type": "text/javascript",
                 "exec": [
                   "pm.test(\"Status 200\", () => pm.response.to.have.status(200));",
                   "pm.test(\"Response has data.result\", () => {",
                   "    const json = pm.response.json();",
                   "    pm.expect(json).to.have.property('status', 'success');",
                   "    pm.expect(json.data).to.have.property('result');",
-                  "});",
-                  "",
-                  "const results = pm.response.json().data.result;",
-                  "let totalEntries = 0;",
-                  "results.forEach(stream => {",
-                  "    const entries = stream.values || [];",
-                  "    totalEntries += entries.length;",
-                  "    entries.forEach(([ts, line]) => {",
-                  "        try {",
-                  "            const parsed = JSON.parse(line);",
-                  "            console.log(`[${parsed.level}] ${parsed.message}`);",
-                  "        } catch(e) {",
-                  "            console.log(line.substring(0, 80));",
-                  "        }",
-                  "    });",
-                  "});",
-                  "console.log(`Total entries: ${totalEntries}`);",
-                  "",
-                  "pm.test(\"Has log entries\", () => {",
-                  "    pm.expect(totalEntries).to.be.at.least(0);",
                   "});"
-                ],
-                "type": "text/javascript"
+                ]
               }
             }
           ],
-          "request": {
-            "method": "GET",
-            "header": [],
-            "url": {
-              "raw": "{{loki_url}}/loki/api/v1/query_range?query={service%3D\"checkout-api\"}&start={{start_ts_ns}}&end={{end_ts_ns}}&limit=100",
-              "host": ["{{loki_url}}"],
-              "path": ["loki", "api", "v1", "query_range"],
-              "query": [
-                {
-                  "key": "query",
-                  "value": "{service=\"checkout-api\"}",
-                  "encode": true,
-                  "description": "LogQL stream selector — matches all logs from the checkout-api service"
-                },
-                {
-                  "key": "start",
-                  "value": "{{start_ts_ns}}",
-                  "description": "Start timestamp in NANOSECONDS (Loki requires nanoseconds, not seconds).\n\nAdd Pre-request Script:\n  const nowNs = Date.now() * 1_000_000;\n  pm.collectionVariables.set('end_ts_ns', nowNs.toString());\n  pm.collectionVariables.set('start_ts_ns', (nowNs - BigInt(900_000_000_000)).toString());"
-                },
-                {
-                  "key": "end",
-                  "value": "{{end_ts_ns}}"
-                },
-                {
-                  "key": "limit",
-                  "value": "100"
-                }
-              ]
-            },
-            "description": "Fetch log lines from Lok for the checkout-api service.\n\nReturns JSON with log entries grouped by stream (label set).\n\nLoki uses NANOSECOND timestamps (Unix epoch × 1,000,000,000).\nExample: 1700000000 seconds → 1700000000000000000 nanoseconds.\n\nAdd a Pre-request Script to auto-set timestamps:\n  const now = Date.now();\n  const nowNs = now * 1_000_000;                 // milliseconds → nanoseconds\n  const startNs = nowNs - 15 * 60 * 1_000_000_000; // 15 minutes ago\n  pm.collectionVariables.set('start_ts_ns', startNs.toString());\n  pm.collectionVariables.set('end_ts_ns', nowNs.toString());"
-          },
           "response": [
             {
               "name": "Example Loki response",
               "status": "OK",
               "code": 200,
-              "body": "{\n  \"status\": \"success\",\n  \"data\": {\n    \"resultType\": \"streams\",\n    \"result\": [\n      {\n        \"stream\": {\n          \"service\": \"checkout-api\",\n          \"source\": \"flask-generator\"\n        },\n        \"values\": [\n          [\"1700000000000000000\", \"{\\\"timestamp\\\":\\\"2026-07-16T12:00:00Z\\\",\\\"level\\\":\\\"ERROR\\\",\\\"message\\\":\\\"could not obtain connection from pool within 5000ms\\\",...}\"],\n          [\"1700000060000000000\", \"{\\\"timestamp\\\":\\\"2026-07-16T12:00:06Z\\\",\\\"level\\\":\\\"WARN\\\",\\\"message\\\":\\\"request exceeded p99 SLO threshold (1500ms)\\\",...}\"]\n        ]\n      }\n    ]\n  }\n}"
+              "header": [],
+              "body": "{\n  \"status\": \"success\",\n  \"data\": {\n    \"resultType\": \"streams\",\n    \"result\": [{\n      \"stream\": {\"service\": \"checkout-api\", \"source\": \"flask-generator\"},\n      \"values\": [\n        [\"1700000000000000000\", \"{\\\"timestamp\\\":\\\"2026-07-16T12:00:00Z\\\",\\\"level\\\":\\\"ERROR\\\",\\\"message\\\":\\\"could not obtain connection from pool within 5000ms\\\"}\"],\n        [\"1700000060000000000\", \"{\\\"timestamp\\\":\\\"2026-07-16T12:00:06Z\\\",\\\"level\\\":\\\"WARN\\\",\\\"message\\\":\\\"request exceeded p99 SLO threshold (1500ms)\\\"}\"]\n      ]\n    }]\n  }\n}"
             }
           ]
         },
@@ -814,31 +820,9 @@
             "method": "GET",
             "header": [],
             "url": {
-              "raw": "{{loki_url}}/loki/api/v1/query_range?query={service%3D\"checkout-api\"}%20|%3D%20\"ERROR\"&start={{start_ts_ns}}&end={{end_ts_ns}}&limit=50",
-              "host": ["{{loki_url}}"],
-              "path": ["loki", "api", "v1", "query_range"],
-              "query": [
-                {
-                  "key": "query",
-                  "value": "{service=\"checkout-api\"} |= \"ERROR\"",
-                  "encode": true,
-                  "description": "LogQL: filter for lines containing 'ERROR'"
-                },
-                {
-                  "key": "start",
-                  "value": "{{start_ts_ns}}"
-                },
-                {
-                  "key": "end",
-                  "value": "{{end_ts_ns}}"
-                },
-                {
-                  "key": "limit",
-                  "value": "50"
-                }
-              ]
+              "raw": "{{loki_url}}/loki/api/v1/query_range?query={service%3D\"checkout-api\"}%20|%3D%20\"ERROR\"&start={{start_ts_ns}}&end={{end_ts_ns}}&limit=50"
             },
-            "description": "Filter loki log lines to only those containing 'ERROR'. Useful for checking whether the pool exhaustion or fraud scenarios are firing error logs."
+            "description": "Filter Loki log lines to only those containing 'ERROR'."
           }
         },
         {
@@ -847,31 +831,9 @@
             "method": "GET",
             "header": [],
             "url": {
-              "raw": "{{loki_url}}/loki/api/v1/query_range?query={service%3D\"checkout-api\"}%20|%3D%20\"connection\"&start={{start_ts_ns}}&end={{end_ts_ns}}&limit=50",
-              "host": ["{{loki_url}}"],
-              "path": ["loki", "api", "v1", "query_range"],
-              "query": [
-                {
-                  "key": "query",
-                  "value": "{service=\"checkout-api\"} |= \"connection\"",
-                  "encode": true,
-                  "description": "LogQL: filter for lines containing 'connection' (pool timeout errors)"
-                },
-                {
-                  "key": "start",
-                  "value": "{{start_ts_ns}}"
-                },
-                {
-                  "key": "end",
-                  "value": "{{end_ts_ns}}"
-                },
-                {
-                  "key": "limit",
-                  "value": "50"
-                }
-              ]
+              "raw": "{{loki_url}}/loki/api/v1/query_range?query={service%3D\"checkout-api\"}%20|%3D%20\"connection\"&start={{start_ts_ns}}&end={{end_ts_ns}}&limit=50"
             },
-            "description": "Filter loki log lines for pool-connection timeout errors."
+            "description": "Filter Loki log lines for pool-connection timeout errors."
           }
         },
         {
@@ -880,31 +842,9 @@
             "method": "GET",
             "header": [],
             "url": {
-              "raw": "{{loki_url}}/loki/api/v1/query_range?query={service%3D\"checkout-api\"}%20|%3D%20\"fraud\"&start={{start_ts_ns}}&end={{end_ts_ns}}&limit=50",
-              "host": ["{{loki_url}}"],
-              "path": ["loki", "api", "v1", "query_range"],
-              "query": [
-                {
-                  "key": "query",
-                  "value": "{service=\"checkout-api\"} |= \"fraud\"",
-                  "encode": true,
-                  "description": "LogQL: filter for lines containing 'fraud' (fraud-scoring-svc unavailable errors)"
-                },
-                {
-                  "key": "start",
-                  "value": "{{start_ts_ns}}"
-                },
-                {
-                  "key": "end",
-                  "value": "{{end_ts_ns}}"
-                },
-                {
-                  "key": "limit",
-                  "value": "50"
-                }
-              ]
+              "raw": "{{loki_url}}/loki/api/v1/query_range?query={service%3D\"checkout-api\"}%20|%3D%20\"fraud\"&start={{start_ts_ns}}&end={{end_ts_ns}}&limit=50"
             },
-            "description": "Filter loki log lines for fraud-scoring-service unavailable errors."
+            "description": "Filter Loki log lines for fraud-scoring-service unavailable errors."
           }
         }
       ]
@@ -915,24 +855,6 @@
       "item": [
         {
           "name": "Grafana — Search Dashboards",
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "exec": [
-                  "pm.test(\"Status 200\", () => pm.response.to.have.status(200));",
-                  "pm.test(\"Returns dashboard list\", () => {",
-                  "    const data = pm.response.json();",
-                  "    pm.expect(data).to.be.an('array');",
-                  "    data.forEach(d => {",
-                  "        console.log(`Dashboard: ${d.title} (uid: ${d.uid})`);",
-                  "    });",
-                  "});"
-                ],
-                "type": "text/javascript"
-              }
-            }
-          ],
           "request": {
             "method": "GET",
             "header": [
@@ -943,24 +865,32 @@
               }
             ],
             "url": {
-              "raw": "{{grafana_url}}/api/search?folder=Incidents",
-              "host": ["{{grafana_url}}"],
-              "path": ["api", "search"],
-              "query": [
-                {
-                  "key": "folder",
-                  "value": "Incidents"
-                }
-              ]
+              "raw": "{{grafana_url}}/api/search?folder=Incidents"
             },
-            "description": "Search Grafana dashboards in the 'Incidents' folder. Returns all provisioned incident dashboards.\n\nExpected dashboards:\n  - Incident Overview\n  - Pool Exhaustion\n  - Cache Failover\n  - Fraud Outage"
+            "description": "Search Grafana dashboards in the 'Incidents' folder. Returns all provisioned incident dashboards."
           },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Status 200\", () => pm.response.to.have.status(200));",
+                  "pm.test(\"Returns dashboard list\", () => {",
+                  "    const data = pm.response.json();",
+                  "    pm.expect(data).to.be.an('array');",
+                  "});"
+                ]
+              }
+            }
+          ],
           "response": [
             {
               "name": "Dashboard list",
               "status": "OK",
               "code": 200,
-              "body": "[\n  {\n    \"id\": 1,\n    \"uid\": \"incident-overview\",\n    \"title\": \"Incident Overview\",\n    \"uri\": \"db/incident-overview\",\n    \"url\": \"/d/incident-overview/incident-overview\",\n    \"type\": \"dash-db\",\n    \"tags\": [],\n    \"isStarred\": false\n  },\n  {\n    \"id\": 2,\n    \"uid\": \"pool-exhaustion\",\n    \"title\": \"Pool Exhaustion\",\n    \"uri\": \"db/pool-exhaustion\",\n    \"url\": \"/d/pool-exhaustion/pool-exhaustion\",\n    \"type\": \"dash-db\",\n    \"tags\": [],\n    \"isStarred\": false\n  }\n]"
+              "header": [],
+              "body": "[{\n  \"id\": 1,\n  \"uid\": \"incident-overview\",\n  \"title\": \"Incident Overview\"\n},{\n  \"id\": 2,\n  \"uid\": \"pool-exhaustion\",\n  \"title\": \"Pool Exhaustion\"\n}]"
             }
           ]
         },
@@ -976,12 +906,9 @@
               }
             ],
             "url": {
-              "raw": "{{grafana_url}}/api/dashboards/uid/incident-overview",
-              "host": ["{{grafana_url}}"],
-              "path": ["api", "dashboards", "uid", "incident-overview"],
-              "description": "Get full dashboard definition for the Incident Overview dashboard. Replace 'incident-overview' with:\n  - pool-exhaustion\n  - cache-failover\n  - fraud-outage"
+              "raw": "{{grafana_url}}/api/dashboards/uid/incident-overview"
             },
-            "description": "Fetch the full dashboard JSON definition including panels, queries, and layout.\n\nAvailable dashboard UIDs:\n  - incident-overview\n  - pool-exhaustion\n  - cache-failover\n  - fraud-outage"
+            "description": "Fetch the full dashboard JSON definition including panels, queries, and layout.\n\nAvailable dashboard UIDs: incident-overview, pool-exhaustion, cache-failover, fraud-outage"
           }
         },
         {
@@ -996,9 +923,7 @@
               }
             ],
             "url": {
-              "raw": "{{grafana_url}}/api/datasources",
-              "host": ["{{grafana_url}}"],
-              "path": ["api", "datasources"]
+              "raw": "{{grafana_url}}/api/datasources"
             },
             "description": "List all configured Grafana datasources. Should show both Prometheus and Loki."
           }
@@ -1009,8 +934,7 @@
             "method": "GET",
             "header": [],
             "url": {
-              "raw": "{{grafana_url}}",
-              "host": ["{{grafana_url}}"]
+              "raw": "{{grafana_url}}"
             },
             "description": "Grafana home page. Opens the Grafana login/landing page in a browser."
           }
@@ -1023,115 +947,24 @@
       "item": [
         {
           "name": "▶️ Workflow: Pool Exhaustion Lifecycle",
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "exec": [
-                  "console.log('=== Pool Exhaustion Lifecycle ===');",
-                  "console.log('');",
-                  "console.log('Run these steps in order:');",
-                  "console.log('');",
-                  "console.log('Step 1: Start the stack (one-time)');",
-                  "console.log('  docker compose up -d');",
-                  "console.log('');",
-                  "console.log('Step 2: Verify all services healthy');",
-                  "console.log('  → Flask:    GET /health');",
-                  "console.log('  → Prom:     GET /-/ready');",
-                  "console.log('  → Loki:     GET /ready');",
-                  "console.log('  → Grafana:  GET /api/health');",
-                  "console.log('');",
-                  "console.log('Step 3: TRIGGER pool exhaustion');",
-                  "console.log('  POST /api/incidents/pool/trigger');",
-                  "console.log('');",
-                  "console.log('Step 4: MONITOR (run every 3s for 45s)');",
-                  "console.log('  GET /api/incidents/state');",
-                  "console.log('');",
-                  "console.log('  Expected progression:');",
-                  "console.log('    0s:  kind=\"pool\" phase=\"climbing\"    conns=118  latency=380ms');",
-                  "console.log('    7s:  kind=\"pool\" phase=\"climbing\"    conns=158  latency=1082ms');",
-                  "console.log('    15s: kind=\"pool\" phase=\"plateau\"    conns=200  latency=1780ms');",
-                  "console.log('    30s: kind=\"pool\" phase=\"recovering\" conns=161  latency=758ms');",
-                  "console.log('    40s: kind=\"none\" (auto-resolved)');",
-                  "console.log('');",
-                  "console.log('Step 5: QUERY Prometheus for live metrics');",
-                  "console.log('  GET /api/v1/query_range?query=checkout_p99_latency_ms...');",
-                  "console.log('');",
-                  "console.log('Step 6: QUERY Loki for application logs');",
-                  "console.log('  GET /loki/api/v1/query_range?query={service=\"checkout-api\"}');",
-                  "console.log('');",
-                  "console.log('Step 7: OPEN Grafana dashboards');",
-                  "console.log('  http://localhost:3000 (admin/admin) → Incidents folder');",
-                  "console.log('');",
-                  "console.log('=== End of workflow ===');"
-                ],
-                "type": "text/javascript"
-              }
-            }
-          ],
           "request": {
             "method": "GET",
             "header": [],
             "url": {
-              "raw": "{{flask_url}}/health",
-              "host": ["{{flask_url}}"],
-              "path": ["health"]
+              "raw": "{{api_url}}/health"
             },
-            "description": "This is a workflow guide, not an actual API call. Run the documented steps in order using the other requests in this collection.\n\nSee the script tab for the complete step-by-step instructions."
+            "description": "This is a workflow guide, not an actual API call. See the collection requests for individual steps."
           }
         },
         {
           "name": "▶️ Workflow: Compare Pool vs Cache vs Fraud",
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "exec": [
-                  "console.log('=== Incident Scenario Comparison Guide ===');",
-                  "console.log('');",
-                  "console.log('Run each scenario separately and compare metrics:');",
-                  "console.log('');",
-                  "console.log('POOL EXHAUSTION (POST /api/incidents/pool/trigger)');",
-                  "console.log('  Latency:     climbs gradually 380→1830ms');",
-                  "console.log('  Connections: climbs 118→200, pins at max');",
-                  "console.log('  Error rate:  climbs 0.05%→6.1%');",
-                  "console.log('  Cache hit:   stays at 0.95 (unaffected)');",
-                  "console.log('  Logs:        ERROR \"could not obtain connection from pool\"');",
-                  "console.log('');",
-                  "console.log('CACHE FAILOVER (POST /api/incidents/cache/trigger)');",
-                  "console.log('  Latency:     climbs 380→930ms (step change at failover)');",
-                  "console.log('  Connections: stays at 118 (unaffected)');",
-                  "console.log('  Error rate:  stays at 0.05% (NO errors)');",
-                  "console.log('  Cache hit:   drops 0.95→0.41 step, then warms back');",
-                  "console.log('  Logs:        WARN \"Redis cluster failover detected\"');",
-                  "console.log('');",
-                  "console.log('FRAUD OUTAGE (POST /api/incidents/fraud/trigger)');",
-                  "console.log('  Latency:     jumps to 836ms (2.2x baseline)');",
-                  "console.log('  Connections: stays at 118 (unaffected)');",
-                  "console.log('  Error rate:  spikes to 10-15% (dramatic)');",
-                  "console.log('  Cache hit:   stays at 0.95 (unaffected)');",
-                  "console.log('  Logs:        ERROR \"fraud-scoring-svc unavailable\"');",
-                  "console.log('');",
-                  "console.log('=== The key insight for the IncidentPilot agent ===');",
-                  "console.log('Different scenarios have DISTINCT metric signatures:');",
-                  "console.log('  High error rate + high latency + high connections = POOL');",
-                  "console.log('  Low cache hit + high latency + normal errors     = CACHE');",
-                  "console.log('  High error rate + no connection issue + normal    = FRAUD');",
-                  "console.log('');"
-                ],
-                "type": "text/javascript"
-              }
-            }
-          ],
           "request": {
             "method": "GET",
             "header": [],
             "url": {
-              "raw": "{{flask_url}}/health",
-              "host": ["{{flask_url}}"],
-              "path": ["health"]
+              "raw": "{{api_url}}/health"
             },
-            "description": "Comparison guide showing the distinct metric signatures of all 3 incident scenarios. This helps understand how the IncidentPilot agent distinguishes between them."
+            "description": "Comparison guide showing the distinct metric signatures of all 3 incident scenarios."
           }
         }
       ]

@@ -33,7 +33,7 @@ AI-powered incident-response copilot for on-call SRE engineers. Uses RAG over ru
                    │ HTTP
 ┌─ Docker Stack ───▼─────────────────────────────┐
 │                                                │
-│  Flask Generator (:5001) ──→ Prometheus (:9090) │
+│  FastAPI Generator (:5001) ──→ Prometheus (:9090) │
 │       │ stdout / HTTP push ──→ Loki (:3100)    │
 │                                                │
 │  Grafana (:3000) ←── Prometheus + Loki         │
@@ -51,7 +51,7 @@ AI-powered incident-response copilot for on-call SRE engineers. Uses RAG over ru
 | Embeddings | HuggingFace `all-MiniLM-L6-v2` | — |
 | Vector Store | ChromaDB | — |
 | UI | Gradio 4.x | `7860` |
-| Incident Simulator | Flask (Docker) | `5001` |
+| Incident Simulator | FastAPI (Docker) | `5001` |
 | Metrics | Prometheus (Docker) | `9090` |
 | Logs | Loki (Docker) | `3100` |
 | Dashboards | Grafana (Docker) | `3000` |
@@ -61,27 +61,29 @@ AI-powered incident-response copilot for on-call SRE engineers. Uses RAG over ru
 ## Quick Start
 
 ```bash
-# 1. Setup
-python3.11 -m venv .venv
-source .venv/bin/activate
-pip install torch --index-url https://download.pytorch.org/whl/cpu
-pip install -r requirements.txt
+# 1. Install uv (if needed)
+# curl -LsSf https://astral.sh/uv/install.sh | sh
 
-# 2. API key
+# 2. Setup (create .venv, install deps)
+uv venv
+uv sync --group test
+uv pip install torch --index-url https://download.pytorch.org/whl/cpu
+
+# 3. API key
 cp .env.example .env   # Add GROQ_API_KEY=your_key_here
 
-# 3. Build RAG vector store
-.venv/bin/python src/ingestion.py
+# 4. Build RAG vector store
+uv run python src/ingestion.py
 
-# 4. Start monitoring stack
+# 5. Start monitoring stack
 docker compose up -d
 
-# 5. Trigger an incident and test the agent
+# 6. Trigger an incident and test the agent
 curl -X POST http://localhost:5001/api/incidents/pool/trigger
-.venv/bin/python src/incident_pilot.py
+uv run python src/incident_pilot.py
 
-# 6. Launch the Gradio UI
-cd src && TOKENIZERS_PARALLELISM=false ../.venv/bin/python app.py
+# 7. Launch the Gradio UI
+cd src && TOKENIZERS_PARALLELISM=false uv run python app.py
 # Open http://127.0.0.1:7860
 ```
 
@@ -90,8 +92,8 @@ cd src && TOKENIZERS_PARALLELISM=false ../.venv/bin/python app.py
 ## Testing
 
 ```bash
-.venv/bin/python -m pytest tests/ -v
-# 67 tests: guardrails (2 real LLM) + structure (5) + contradiction detection (17) + data layer (43)
+uv run python -m pytest tests/ -v
+# 131 tests: guardrails (2 real LLM) + structure (5) + contradiction detection (17) + data layer (43) + FastAPI (64)
 ```
 
 ---

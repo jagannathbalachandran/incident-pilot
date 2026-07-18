@@ -6,25 +6,35 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 **incident-pilot** is an AI-powered incident-response copilot for on-call SRE engineers. It uses RAG over runbooks and postmortems; queries live Prometheus metrics and Loki logs (with automatic static fallback); runs structured log analysis (level breakdown, pattern grouping, error cluster detection); and returns cited triage summaries — but it **never executes deploys, rollbacks, or any production-mutating action** without explicit human approval.
 
-Tech stack: **Python + LangChain + Groq LLM + ChromaDB + Gradio UI + Docker Compose (Prometheus/Loki/Grafana/Flask generator)**.
+Tech stack: **Python + LangChain + Groq LLM + ChromaDB + Gradio UI + Docker Compose (Prometheus/Loki/Grafana/FastAPI generator)**.
+
+Package manager: **uv** (https://docs.astral.sh/uv/)
 
 ## Quick start
 
 ```bash
-# 1. Build vector store (one-time)
-.venv/bin/python src/ingestion.py
+# 1. Install uv (if not already installed)
+# curl -LsSf https://astral.sh/uv/install.sh | sh
 
-# 2. Start monitoring stack
+# 2. Create venv and install dependencies
+uv venv
+uv sync --group test
+uv pip install torch --index-url https://download.pytorch.org/whl/cpu
+
+# 3. Build vector store (one-time)
+uv run python src/ingestion.py
+
+# 4. Start monitoring stack
 docker compose up -d
 
-# 3. Trigger an incident
+# 5. Trigger an incident
 curl -X POST http://localhost:5001/api/incidents/pool/trigger
 
-# 4. Run the agent (queries live Prometheus + RAG)
-.venv/bin/python src/incident_pilot.py
+# 6. Run the agent (queries live Prometheus + RAG)
+uv run python src/incident_pilot.py
 
 # Or launch the UI
-cd src && TOKENIZERS_PARALLELISM=false ../.venv/bin/python app.py
+cd src && TOKENIZERS_PARALLELISM=false uv run python app.py
 ```
 
 ## Source files
@@ -54,8 +64,8 @@ Plus log analysis:
 Gradio UI. Shows data source badge (🟢 Live / 🟡 Fallback / 🔴 Unavailable). Submits query with cached live data to avoid double-querying Prometheus/Loki.
 
 ### `flask-generator/`
-Docker Flask app that simulates production incidents in real-time:
-- `app.py` — Flask server with background tick loop
+Docker FastAPI app that simulates production incidents in real-time:
+- `app.py` — FastAPI server with background tick loop
 - `incident_scenarios.py` — state machine for pool/cache/fraud scenarios
 - `config.py` — Pydantic models, timing budgets, metric baselines
 - `metrics_exporter.py` — Prometheus client registry
@@ -75,12 +85,13 @@ Docker Flask app that simulates production incidents in real-time:
 ## Running tests
 
 ```bash
-# All tests
-.venv/bin/python -m pytest tests/ -v
+# All tests via uv
+uv run python -m pytest tests/ -v
 
 # Specific suites
-.venv/bin/python -m pytest tests/test_query_logs.py -v    # 43 tests
-.venv/bin/python -m pytest tests/test_incident_pilot.py -v # 4 tests (2 call real Groq)
+uv run python -m pytest tests/test_query_logs.py -v         # 43 tests
+uv run python -m pytest tests/test_incident_pilot.py -v     # 24 tests
+uv run python -m pytest tests/test_fastapi_generator.py -v  # 64 tests
 ```
 
 `test_query_logs.py` mocks all network calls — no live stack needed.  
@@ -150,9 +161,19 @@ User query
 | `synthetic-data/metrics/` | JSON time-series metrics for fallback |
 | `synthetic-data/logs/` | JSONL application logs for fallback |
 | `synthetic-data/vectorstore/` | ChromaDB (built by `ingestion.py`, not committed) |
-| `flask-generator/` | Docker Flask incident simulator |
+| `flask-generator/` | Docker FastAPI incident simulator |
 | `docs/` | Generation prompts and team context |
 | `prompts/` | System prompt and generation prompts |
+
+## Dependency management
+
+Dependencies are declared in `pyproject.toml` (root) and `flask-generator/pyproject.toml`.
+
+- `uv sync` — install all project dependencies into `.venv`
+- `uv sync --group test` — include test dependencies (pytest, httpx)
+- `uv sync --no-dev` — production install (no test/dev groups)
+- `uv lock` — update `uv.lock` after changing dependencies
+- `uv pip install torch --index-url https://download.pytorch.org/whl/cpu` — torch must use a special index
 
 ## Conventions for runbooks and postmortems
 

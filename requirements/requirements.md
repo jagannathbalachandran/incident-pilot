@@ -31,3 +31,60 @@ Build an incident-response copilot that helps an on-call engineer triage product
 - Must not fabricate log data, metrics, or incident history; all such claims must be backed by a tool call or memory retrieval with a citation/timestamp.
 - Must flag when a current incident's severity (based on retrieved metrics) exceeds a threshold and recommend immediate human paging rather than continuing autonomous triage.
 - Observability must capture full traces (queries, retrievals, tool calls, and every guardrail refusal) feeding the agent's own dashboard; used both for the demo and as a meta-example of observability in practice.
+
+## 6. Ingestion Pipeline Requirements (MVP — Phase 0)
+
+The ingestion system is the foundation for all agent capabilities. The MVP ingestion pipeline (Phase 0, 4 weeks) must meet these requirements before multi-service or multi-format expansion:
+
+### 6.1 Document Loading
+- Must support multiple document formats via a pluggable `DocumentLoader` abstraction (`.md` native, `.pdf` via PyMuPDF).
+- Adding a new format must not require modifying the core ingestion pipeline — only implementing a new loader.
+- Loaders must return a standardized `Document` dataclass: `{content, source_url, doc_type, last_updated, content_hash, metadata}`.
+- Must support incremental addition of loaders for HTML and DOCX (Phase 1).
+
+### 6.2 Metadata & Traceability
+- Every chunk must carry `source_url` (path or URI), `last_updated` (ISO 8601), and `content_hash` (SHA256) for verifiable citations.
+- `content_hash` must be computed from the raw document content before any processing — enables incremental sync and tamper detection.
+- Metadata schema must be extensible: `doc_type`, `word_count`, `file_size` (Phase 1), `service`, `team`, `repo_url` (Phase 2), `allowed_roles[]` (Phase 4).
+
+### 6.3 Chunking
+- Must support multi-stage chunking: `MarkdownHeaderTextSplitter` (hierarchy preservation) → `RecursiveCharacterTextSplitter` (oversized section handling).
+- Must preserve markdown structure (headers, code blocks, tables) where possible.
+- Must support code-aware chunking that preserves function boundaries (Phase 2).
+
+### 6.4 Vector Store
+- Must support configurable vector store backend (via abstraction): ChromaDB for development, Qdrant for production (Phase 1).
+- Must support metadata pre-filtering before vector search (Qdrant payload indexes, Phase 1).
+- Must support RBAC filtering at query time via `allowed_roles[]` metadata (Phase 4).
+
+### 6.5 Re-indexing & Freshness
+- Must support incremental sync: only re-embed documents whose `content_hash` has changed since last index.
+- Must detect stale documents (content_hash mismatch) and flag them for re-indexing.
+- Incremental re-index must complete in < 5 seconds for the current corpus (~50-150 chunks). Full re-index target: < 10 seconds for 10 documents.
+
+### 6.6 RBAC (Phased)
+- Phase 0-1: No RBAC enforcement; metadata schema designed with `allowed_roles[]` field reserved.
+- Phase 1: Metadata pre-filtering by `doc_type` via Qdrant payload indexes.
+- Phase 4: Full RBAC stamping on every chunk + JWT role verification + AD/LDAP integration.
+
+### 6.7 Security Constraints
+- No raw log lines may be sent to the LLM (already enforced via `analyze_logs()` structured summary pattern).
+- The `phase` label from synthetic metrics must be stripped before data reaches any agent (already enforced).
+- PII/PHI redaction must be applied to log content before storage when compliance requires it (Phase 4).
+
+### 6.8 Audit Trail (Phase 4)
+- Every retrieval must be logged: `request_id`, `user_id` (from JWT), `query_text`, `num_chunks_returned`, `chunk_ids`, `latency_ms`.
+- Every ingestion run must be logged: `batch_id`, `documents_loaded`, `chunks_created`, `embedding_model`, `vector_store_target`, `errors`.
+- Audit store must be append-only (PostgreSQL with pgAudit), with 90-day hot retention and 7-year cold archive.
+
+### 6.9 Quality Metrics
+- Retrieval precision@3 must be measured and tracked across ingestion runs.
+- Retrieval latency p50/p99 must be monitored per query.
+- Citation freshness must be displayed per chunk (via `last_updated` metadata).
+- Embedding model quality must be benchmarked before upgrades (all-MiniLM baseline vs BGE-Large).
+
+### 6.10 Compliance (Referenced)
+See `docs/ingestion/ingestion-analysis.md` Section 8 for full SOC2/HIPAA/PCI-DSS mapping. The ingestion pipeline meets the following minimum controls at MVP:
+- **Data integrity**: `content_hash` on every chunk (SOC2 PI1.1, HIPAA §164.312(c))
+- **Traceability**: `source_url` + `last_updated` on every citation (SOC2 CC7.2)
+- **Access control foundation**: Reserved `allowed_roles[]` metadata field (SOC2 CC6.2, PCI Req. 7)

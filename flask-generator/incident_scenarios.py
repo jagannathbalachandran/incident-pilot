@@ -121,7 +121,7 @@ class IncidentEngine:
         has the message.
         """
         with self._lock:
-            if self._active is None:
+            if self._active is None or self._active.phase == "resolved":
                 logger.info("Resolve: no active incident to resolve")
                 return ScenarioResult(
                     data=ResolveResponse(status="no_active_incident").model_dump(),

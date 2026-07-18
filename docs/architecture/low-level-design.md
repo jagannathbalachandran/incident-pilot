@@ -10,7 +10,7 @@
 
 ## 1. Class Diagrams
 
-### 1.1 Flask Generator — Core Classes
+### 1.1 FastAPI Generator — Core Classes
 
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
@@ -376,20 +376,28 @@ must infer the incident stage from the metric shapes alone.
 
 ---
 
-## 5. Flask Application Structure
+## 5. FastAPI Application Structure
 
 ### 5.1 `app.py` — Application Entry Point
 
 ```python
 # Pseudocode structure
-app = Flask(__name__)
-# No CORS needed — the Flask app is only scraped by Prometheus (internal
-# Docker network) and queried by curl from the host machine. Browser
-# CORS is not required for these use cases.
+from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse, PlainTextResponse
+
+app = FastAPI(title="Incident Generator", version="3.0.0")
 
 # Global instances
 engine = IncidentEngine()
 log_generator = LogGenerator()
+
+# Request-ID middleware
+@app.middleware("http")
+async def add_request_id(request: Request, call_next):
+    rid = _generate_rid()
+    _request_id_ctx.set(rid)
+    response = await call_next(request)
+    return response
 
 # Background tick thread: advances scenario state and emits metrics/logs
 def _tick_loop():
@@ -401,54 +409,67 @@ def _tick_loop():
             log_generator.emit_logs(state)  # JSONL logs to stdout + Loki push
         time.sleep(TICK_INTERVAL_SECONDS)
 
-# Note: update_all() is a module-level function from metrics_exporter.py,
-# not a class method. Prometheus metrics are registered on a shared
-# CollectorRegistry and updated directly in the tick loop.
-
 threading.Thread(target=_tick_loop, daemon=True, name="tick-loop").start()
 
 # Routes (see API spec in HLD)
-@app.route("/metrics")
+@app.get("/metrics")
 def metrics_endpoint():
-    return Response(generate_latest(REGISTRY), mimetype=CONTENT_TYPE_LATEST)
+    return PlainTextResponse(
+        content=generate_latest(REGISTRY),
+        media_type=CONTENT_TYPE_LATEST
+    )
 
-@app.route("/health")
+@app.get("/health")
 def health():
-    return jsonify(HealthResponse(...).model_dump())
+    return _json_resp(HealthResponse(service="flask-generator", active_incident=active))
 
-@app.route("/api/incidents/<kind>/trigger", methods=["POST"])
-def trigger_incident(kind):
-    body = request.get_json(silent=True) or {}
-    req = TriggerRequest(**body)   # Pydantic validation
+@app.post("/api/incidents/{kind}/trigger")
+def trigger_incident(kind: str, body: TriggerRequest = TriggerRequest()):
+    ...  # FastAPI validates the Pydantic body automatically
+
+@app.post("/api/incidents/{kind}/resolve")
+def resolve(kind: str):
     ...
 
-@app.route("/api/incidents/<kind>/resolve", methods=["POST"])
-def resolve(kind):
-    ...
-
-@app.route("/api/incidents/trigger-random", methods=["POST"])
+@app.post("/api/incidents/trigger-random")
 def trigger_random():
     ...
 
-@app.route("/api/incidents/state")
+@app.get("/api/incidents/state")
 def state():
     ...
 
-# Pydantic models (config.py):
-# All API request/response types are Pydantic BaseModel subclasses:
-#   TriggerRequest, TriggerResponse, ResolveResponse,
-#   HealthResponse, StateResponse, ErrorResponse
+# Pydantic models (config.py) stay the same:
+# TriggerRequest, TriggerResponse, ResolveResponse,
+# HealthResponse, StateResponse, ErrorResponse
 ```
+
+**Key changes from Flask:**
+- `@app.get(...)` / `@app.post(...)` instead of `@app.route(...)`
+- `PlainTextResponse` for Prometheus metrics instead of Flask `Response(mimetype=...)`
+- `JSONResponse` instead of `jsonify(...)`
+- Pydantic models as FastAPI dependencies for automatic validation + OpenAPI docs
+- ASGI middleware instead of Flask `before_request`
+- `uvicorn` server instead of Flask's built-in WSGI server
+- Auto-generated OpenAPI docs at `/docs` and `/redoc`
 
 ### 5.2 Thread Safety
 
 The `IncidentEngine` is accessed from both:
 - The background tick thread (reads + writes `active` state)
-- Flask route handlers (reads `state`; writes `start_scenario` / `resolve` via POST)
+- FastAPI route handlers (reads `state`; writes `start_scenario` / `resolve` via POST)
 
 **Synchronization**: A `threading.RLock` protects the `active` field. All
 public methods (`tick()`, `start_scenario()`, `resolve()`, `get_state()`)
 acquire this lock.
+
+### 5.3 OpenAPI Documentation
+
+FastAPI automatically generates OpenAPI documentation:
+- **Swagger UI**: http://localhost:5001/docs
+- **ReDoc**: http://localhost:5001/redoc
+
+All request/response schemas are derived from the Pydantic models in `config.py`.
 
 ---
 
@@ -530,7 +551,7 @@ limits_config:
 Logs reach Loki via **two independent paths** for reliability:
 
 **Path 1 — Docker log driver (primary):**
-The Flask generator's stdout is forwarded to Loki via the Docker `loki` log
+The FastAPI generator's stdout is forwarded to Loki via the Docker `loki` log
 driver plugin:
 
 ```yaml
@@ -716,9 +737,7 @@ def _format_live_data(self, logs_result: dict) -> str:
         # Prints: Log level breakdown, error rate, top patterns, clusters
 
     return "[Data source: " + source_label + "]\n" + "\n".join(lines)
-```
-
-### 8.3 Gradio UI Data Source Badge
+```### 8.3 Gradio UI Data Source Badge
 
 The Gradio UI (app.py) prepends a source badge to every response:
 
@@ -758,7 +777,7 @@ def _format_trace(trace: dict) -> str:
 
 ### 8.5 Request-ID Tracking
 
-Every Gradio query and every Flask API call gets a unique request ID (12 hex chars)
+Every Gradio query and every FastAPI API call gets a unique request ID (12 hex chars)
 for cross-service log correlation.
 
 **Gradio side (`src/request_context.py`, `src/app.py`):**
@@ -782,10 +801,9 @@ class RequestIdFilter(logging.Filter):
 The filter is added to the root logger in `logging_config.py` so every
 `logger.info()` call across all modules automatically includes `[req=...]`.
 
-**Flask side (`flask-generator/app.py`):**
+**FastAPI side (`flask-generator/app.py`):**
 
-Uses `setLogRecordFactory()` instead of a filter because filters on the root
-logger are NOT consulted when child loggers (like werkzeug) emit records:
+Uses `setLogRecordFactory()` to inject the request ID into every log record:
 
 ```python
 _old_factory = logging.getLogRecordFactory()
@@ -796,10 +814,9 @@ def _record_factory(*args, **kwargs) -> logging.LogRecord:
 logging.setLogRecordFactory(_record_factory)
 ```
 
-A `before_request` handler generates a UUID for every API call (except `/metrics`).
+A FastAPI middleware handler generates a UUID for every API call (except `/metrics`).
 All responses include `request_id` via the `_json_resp()` helper which injects
 it into the Pydantic model's serialized output.
-
 The trigger's `request_id` is stored in `ScenarioState` and flows into every
 log entry emitted by `log_generator.emit_logs()` — enabling end-to-end tracing
 from API trigger → Docker logs → Loki entries.
@@ -856,7 +873,7 @@ WEEK_RNG = random.Random(1337)            # reserved for week dataset
 LOKI_PUSH_URL = os.getenv("LOKI_PUSH_URL", "http://loki:3100/loki/api/v1/push")
 
 # Phase stripping is done in query_logs.py's query_prometheus() function
-# which pops any "phase" label from Prometheus response data. The Flask
+# which pops any "phase" label from Prometheus response data. The FastAPI
 # generator never exposes the phase as a Prometheus label — the agent
 # must infer the incident stage from metric shapes.
 ```
@@ -886,9 +903,9 @@ All 67 tests pass. Run:
 - `_build_contradiction_text` — matching, mismatching, and null cases
 - `_detect_contradictions` — end-to-end integration with realistic data
 
-### 10.2 Flask Generator Tests (Planned, Not Yet Built)
+### 10.2 FastAPI Generator Tests (Planned, Not Yet Built)
 
-The following tests for the Flask generator are **planned but not yet implemented**:
+The following tests for the FastAPI generator are **planned but not yet implemented**:
 
 | Test | What It Validates |
 |---|---|
@@ -921,7 +938,7 @@ iteration.
 ### 11.2 Health Check
 
 ```bash
-# Check Flask (port 5000 inside Docker, mapped to 5001 on host)
+# Check FastAPI (port 5000 inside Docker, mapped to 5001 on host)
 curl http://localhost:5001/health
 
 # Check Prometheus targets

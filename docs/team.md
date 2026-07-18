@@ -6,7 +6,7 @@
 - HuggingFace all-MiniLM-L6-v2 (embeddings)
 - ChromaDB (vector store)
 - Gradio 4.x (UI)
-- Flask (incident simulator)
+- FastAPI (incident simulator)
 - Docker Compose (Prometheus + Loki + Grafana)
 
 ## Roles
@@ -23,7 +23,7 @@
 | Guardrails | ✅ **Done** | Prompt-level safety rules (Priority 1 — unconditional refusal of deploy/rollback/hotfix). Tested with real LLM. |
 | Contradiction Detection | ✅ **Done** | Code-level (4 static methods with metric thresholds) + prompt-level (data-first principle). 17 unit tests. |
 | Trace Panel | ✅ **Done** | Expandable Gradio accordion showing RAG chunks, metrics, log analysis, full prompt, request ID. |
-| Request-ID Tracing | ✅ **Done** | `setLogRecordFactory()` on Gradio side, `contextvars` + `_json_resp()` on Flask side. Logs show `[req=...]`. |
+| Request-ID Tracing | ✅ **Done** | `setLogRecordFactory()` on Gradio side, `contextvars` + `_json_resp()` on FastAPI side. Logs show `[req=...]`. |
 | Observability | ✅ **Done** | Grafana dashboards (Incidents folder), Prometheus metrics, Loki log aggregation. |
 | Memory | ⏳ **Pending** | Cross-session recall of past incidents. |
 | Caching | ⏳ **Pending** | Cache layer for repeated queries. |

@@ -371,7 +371,7 @@ Found 18 entries in Loki
 ### 5.4 Trace Architecture
 
 ```
-API Response (Flask)
+API Response (FastAPI)
 └─ request_id: a24bb972e4aa
      │
      ├── Docker logs: "POST /api/incidents/pool/trigger"
@@ -679,11 +679,11 @@ curl http://localhost:5001/health
 
 ### 10.1 Architectural Insights
 
-1. **Tick Loop Is the Heartbeat:** The Flask app runs a background thread that advances the incident state machine every second (in accelerated mode). This means the simulator is always running — you don't need to trigger incidents to see baseline metrics.
+1. **Tick Loop Is the Heartbeat:** The FastAPI app runs a background thread that advances the incident state machine every second (in accelerated mode). This means the simulator is always running — you don't need to trigger incidents to see baseline metrics.
 
 2. **Logs Are Derived from State, Not Generated Independently:** `log_generator.py` reads the current `ScenarioState` and derives log entries from it. This guarantees that metrics and logs are always aligned — if the metrics show `conns=190`, the logs will show `"could not obtain connection"`.
 
-3. **Request IDs Flow Through Everything:** The `setLogRecordFactory()` approach ensures that even third-party loggers (like `werkzeug`) show the request ID. This works because it wraps every `LogRecord` at creation time, regardless of logger hierarchy.
+3. **Request IDs Flow Through Everything:** The `setLogRecordFactory()` approach ensures that even third-party loggers (like `uvicorn`) show the request ID. This works because it wraps every `LogRecord` at creation time, regardless of logger hierarchy.
 
 4. **Dual Loki Push:** Logs are sent to Loki via TWO mechanisms:
    - Docker Loki log driver (captures stdout)
@@ -1069,7 +1069,7 @@ grep -c "req=a1b2c3d4e5f6" /tmp/gradio.log # Count lines per request
 
 ### 13.4 Tracing via Docker Logs
 
-The Flask generator's logs carry request IDs via `setLogRecordFactory()`. The tick-loop background thread shows `[req=-]` since ticks are not API calls.
+The FastAPI generator's logs carry request IDs via `setLogRecordFactory()`. The tick-loop background thread shows `[req=-]` since ticks are not API calls.
 
 ```bash
 docker logs flask-generator                 # All logs
@@ -1501,7 +1501,7 @@ curl -X POST http://localhost:5001/api/incidents/cache/trigger
 | Decision | Rationale |
 |---|---|
 | **Tick-driven state machine** (not static data) | Incidents evolve in real-time; makes demos realistic and lets the agent practice with live data |
-| **setLogRecordFactory()** (not logging.Filter) | Filters on root logger are skipped by child loggers (werkzeug); the factory wraps ALL LogRecord creation |
+| **setLogRecordFactory()** (not logging.Filter) | Filters on root logger are skipped by child loggers (uvicorn); the factory wraps ALL LogRecord creation |
 | **Dual Loki push** (Docker driver + HTTP push) | The Docker log driver plugin may fail silently; the HTTP push is a guaranteed fallback |
 | **Delete-and-rebuild vector store** (not incremental) | The corpus is small (3 files, 23 chunks); incremental updates add complexity for no benefit |
 | **Pydantic for ALL models** | Every API request/response is a Pydantic BaseModel — validation, serialization, and docs in one place |
@@ -2193,7 +2193,7 @@ Every API call (both Gradio and Flask) gets a **unique 12-hex-char request ID** 
 
 #### 9.2 Why `setLogRecordFactory()` Instead of `logging.Filter`
 
-Filters attached to the **root logger** are NOT consulted when child loggers (like `werkzeug`) emit records. The `setLogRecordFactory()` wraps EVERY LogRecord creation, regardless of logger hierarchy, so the formatter's `%(request_id)s` always resolves.
+Filters attached to the **root logger** are NOT consulted when child loggers (like `uvicorn`) emit records. The `setLogRecordFactory()` wraps EVERY LogRecord creation, regardless of logger hierarchy, so the formatter's `%(request_id)s` always resolves.
 
 #### 9.3 Tracing by Request ID
 

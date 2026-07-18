@@ -2,7 +2,7 @@
 
 > **A focused, step-by-step guide to generating each incident scenario and tracing it through Loki logs and Grafana dashboards.**  
 > System state: Docker stack running, no active incident.  
-> Ports: Flask=5001, Prometheus=9090, Loki=3100, Grafana=3000, Gradio=7860.
+> Ports: FastAPI=5001, Prometheus=9090, Loki=3100, Grafana=3000, Gradio=7860.
 
 ---
 
@@ -73,15 +73,15 @@ echo "Loki ready: $(curl -s -o /dev/null -w '%{http_code}' http://localhost:3100
 
 ## 2. Complete API Walkthrough (Step by Step)
 
-This section walks through **every API endpoint** in the stack — Flask generator, Prometheus, Loki, and Grafana. Each endpoint includes the exact curl command, request format, expected response, and a real example.
+This section walks through **every API endpoint** in the stack — FastAPI generator, Prometheus, Loki, and Grafana. Each endpoint includes the exact curl command, request format, expected response, and a real example.
 
-> **Port map:** Flask=5001, Prometheus=9090, Loki=3100, Grafana=3000
+> **Port map:** FastAPI=5001, Prometheus=9090, Loki=3100, Grafana=3000
 
 ---
 
-### 2.1 Flask Generator API (Port 5001)
+### 2.1 FastAPI Generator API (Port 5001)
 
-All Flask API responses include a `request_id` field (12 hex chars) for cross-service log tracing.
+All FastAPI responses include a `request_id` field (12 hex chars) for cross-service log tracing.
 
 ---
 
@@ -472,7 +472,7 @@ for t in d['data']['activeTargets']:
 up       flask-generator → http://flask-generator:5000/metrics
 ```
 
-**Use this to:** Debug "no data in Prometheus" issues — if the target is `down`, check the Flask generator.
+**Use this to:** Debug "no data in Prometheus" issues — if the target is `down`, check the FastAPI generator.
 
 ---
 
@@ -1328,7 +1328,7 @@ curl -s -G 'http://localhost:9090/api/v1/query' \
   python3 -c "import sys,json; d=json.load(sys.stdin); print(f'Found {len(d[\"data\"][\"result\"])} series')"
 ```
 
-**Check:** Is the Flask generator exposing metrics?
+**Check:** Is the FastAPI generator exposing metrics?
 ```bash
 curl -s http://localhost:5001/metrics | grep checkout_p99
 ```

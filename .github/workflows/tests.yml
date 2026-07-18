@@ -17,15 +17,21 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-          cache: "pip"
 
-      - name: Install torch (CPU)
-        run: pip install torch --index-url https://download.pytorch.org/whl/cpu
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          version: "latest"
+          enable-cache: true
+          cache-dependency-glob: "pyproject.toml"
 
       - name: Install dependencies
-        run: pip install -r requirements.txt
+        run: uv sync --group test
+
+      - name: Install torch (CPU)
+        run: uv pip install torch --index-url https://download.pytorch.org/whl/cpu
 
       - name: Run tests
         env:
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
-        run: python -m pytest tests/ -v
+        run: uv run python -m pytest tests/ -v

@@ -34,7 +34,7 @@
 The following was built beyond the Week 1-2 plan:
 
 - **Docker monitoring stack** — `docker-compose.yml` with flask-generator, prometheus, loki, grafana
-- **Flask incident simulator** — `flask-generator/` with state machine for pool/cache/fraud scenarios
+- **FastAPI incident simulator** — `flask-generator/` with state machine for pool/cache/fraud scenarios
 - **Log analysis** — `analyze_logs()` in `query_logs.py`: log level parsing, message normalization, error cluster detection
 - **Live data badge** — Gradio UI shows 🟢 Live / 🟡 Static fallback / 🔴 Unavailable badge
 - **Automatic data source fallback** — queries live Prometheus/Loki first, falls back to static files
@@ -64,3 +64,74 @@ The following was built beyond the Week 1-2 plan:
 - Red-team your own agent: try to get it to execute a rollback anyway
 - Add a Slack/webhook notification stub
 - Set and hit a latency/cost budget
+
+---
+
+## Ingestion MVP Tasks (Phase 0 — 4 Weeks, Parallel Track)
+
+> These tasks are critical for production readiness. They are scoped as a 4-week parallel track to the core 4-week plan above. See `docs/ingestion/ingestion-analysis.md` (Sections 6-7) for the full phased roadmap and `docs/ingestion/ingestion-pipeline-6-pager.md` for the leadership summary.
+
+**Objective:** Evolve the ingestion pipeline from a single-file Markdown-only loader to a pluggable, metadata-rich, incrementally-synced data foundation. This unlocks verifiable citations, multi-format support, and RBAC readiness.
+
+**Prerequisites:** Core 4-week plan Weeks 1-2 infrastructure (Docker, vector store, RAG pipeline) must be stable.
+
+### Week 1: Metadata & Loader Abstraction
+
+**Demo Goal:** Every chunk displays `source_url`, `last_updated`, and `content_hash`. New formats require only a new loader class.
+
+| # | Task (~1-2 hrs) | Dependencies | Status |
+|---|---|---|---|
+| I1 | Add `source_url`, `last_updated`, `content_hash` fields to chunk metadata in `ingestion.py` | None (metadata-only change) | ⏳ Pending |
+| I2 | Define `Document` dataclass and `DocumentLoader` ABC in `src/loaders/base.py` | I1 | ⏳ Pending |
+| I3 | Refactor existing Markdown loader into `MarkdownLoader( DocumentLoader)` | I2 | ⏳ Pending |
+| I4 | Write unit tests for metadata stamping, hash computation, and loader interface | I1-I3 | ⏳ Pending |
+
+### Week 2: Multi-Format & Multi-Stage Chunking
+
+**Demo Goal:** PDF documents are ingested alongside Markdown. Oversized sections are recursively split.
+
+| # | Task (~1-2 hrs) | Dependencies | Status |
+|---|---|---|---|
+| I5 | Implement `PDFLoader` using PyMuPDF (text extraction → chunking) | I2 loader interface | ⏳ Pending |
+| I6 | Implement multi-stage chunking: `MarkdownHeaderTextSplitter` → `RecursiveCharacterTextSplitter` sub-split | I3 MarkdownLoader | ⏳ Pending |
+| I7 | Implement `HTMLLoader` via `langchain` BeautifulSoup (Phase 1 prep) | I2 | ⏳ Pending |
+| I8 | Write tests for PDF extraction, multi-stage chunking edge cases, HTML parsing | I5-I7 | ⏳ Pending |
+
+### Week 3: Incremental Sync & Freshness
+
+**Demo Goal:** Re-indexing 10 unchanged documents completes in < 2 seconds. Only changed documents are re-embedded.
+
+| # | Task (~1-2 hrs) | Dependencies | Status |
+|---|---|---|---|
+| I9 | Implement content hash comparison: load new hash → compare with stored hash → skip if unchanged | I1 content_hash logic | ⏳ Pending |
+| I10 | Implement hash storage (SQLite or ChromaDB metadata field) | I9 | ⏳ Pending |
+| I11 | Add Prometheus metrics endpoint + `ingestion_latency_ms`, `ingestion_docs_loaded`, `ingestion_chunks_created` counters (requires `prometheus_client` sidecar or FastAPI `/metrics`) | I10 | ⏳ Pending |
+| I12 | Benchmark: full re-index vs incremental sync for 10 docs (target: < 2s incremental, full < 10s) | I9-I11 | ⏳ Pending |
+
+### Week 4: Integration & Compliance Baseline
+
+**Demo Goal:** All ingestion pipeline metrics visible in Grafana. Compliance controls documented and verified.
+
+| # | Task (~1-2 hrs) | Dependencies | Status |
+|---|---|---|---|
+| I13 | Wire incremental sync into existing `src/ingestion.py` entry point | I9-I12 | ⏳ Pending |
+| I14 | Add `retrieval_latency_ms`, `retrieval_precision@3` quality metrics | None (new instrumentation) | ⏳ Pending |
+| I15 | Add Gradio UI badge showing "Ingestion: 🟢 Fresh" / "🟡 Stale" / "🔴 Offline" | I13 | ⏳ Pending |
+| I16 | Document compliance controls (content_hash = HIPAA §164.312(c), source_url = SOC2 CC7.2, reserved `allowed_roles[]` = PCI Req. 7) | All above | ⏳ Pending |
+| I17 | Run full E2E test: PDF + Markdown ingestion → incremental re-index → verify citation metadata → verify freshness badge | I1-I16 | ⏳ Pending |
+
+### Phase 1 Prep (Weeks 5-6, After Core MVP)
+
+| # | Task (~1-2 hrs) | Dependencies | Status |
+|---|---|---|---|
+| I18 | Add Qdrant Docker container + dual-write pipeline (ChromaDB + Qdrant) | Ingestion MVP complete | ⏳ Pending |
+| I19 | Implement `DOCXLoader` via `python-docx` | I2 loader interface | ⏳ Pending |
+| I20 | Switch reads to Qdrant + metadata pre-filtering by `doc_type` | I18 | ⏳ Pending |
+| I21 | Add latency monitoring p50/p99 for Qdrant queries | I20 | ⏳ Pending |
+
+### Key References
+- **Full analysis:** `docs/ingestion/ingestion-analysis.md` (Sections 1, 6, 7, 8)
+- **Executive summary:** `docs/ingestion/INGESTION_EXECUTIVE_SUMMARY.md`
+- **6-pager:** `docs/ingestion/ingestion-pipeline-6-pager.md`
+- **Requirements:** `requirements/requirements.md` Section 6 (Ingestion Requirements)
+- **Compliance mapping:** `docs/ingestion/ingestion-analysis.md` Section 8 (SOC2/HIPAA/PCI-DSS)
