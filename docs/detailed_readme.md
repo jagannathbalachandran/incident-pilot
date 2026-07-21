@@ -142,7 +142,7 @@ flowchart TD
     end
 
     subgraph S3["STEP 3 — Context assembly (_format_context) · local only"]
-        G --> I["_format_context()\n[Source: file | Section: label] blocks"]
+        G --> I["_format_context()\nSource/Section-labelled blocks"]
     end
 
     subgraph S4["STEP 4 — Final triage synthesis · LLM call #2"]
@@ -193,13 +193,13 @@ sequenceDiagram
     rect rgb(245, 245, 225)
     note over Pilot,Chroma: STEP 2 — Retrieval (_retrieve_with_queries) — no LLM call
     loop for each of the ≤6 queries from Step 1
-        Pilot->>Chroma: embed query; similarity_search(query, k=3)
+        Pilot->>Chroma: similarity_search(query, k=3)
         Chroma-->>Pilot: that query's own top-3 chunks (ranked)
     end
-    note right of Pilot: merge all results; dedupe by content-hash<br/>(union only — no cross-query re-rank, no top-k cutoff)
+    note right of Pilot: merge all results, dedupe by content-hash<br/>(union only — no cross-query re-rank, no top-k cutoff)
     end
 
-    note over Pilot: STEP 3 — _format_context(): join chunks as<br/>"[Source: file | Section: label]\n&lt;content&gt;" blocks — local, no external call
+    note over Pilot: STEP 3 — _format_context(), join chunks as<br/>Source/Section-labelled blocks — local, no external call
 
     rect rgb(255, 238, 245)
     note over Pilot,Groq: STEP 4 — Final triage synthesis — LLM CALL #2
