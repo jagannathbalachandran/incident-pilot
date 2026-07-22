@@ -20,15 +20,15 @@ services:
     environment:
       - TICK_MODE=${TICK_MODE:-accelerated}
       - TICK_INTERVAL=${TICK_INTERVAL:-}
+      - JOURNEYS_PER_TICK=${JOURNEYS_PER_TICK:-}
       - HOST=0.0.0.0
       - PORT=5000
-    logging:
-      driver: loki
-      options:
-        loki-url: "http://loki:3100/loki/api/v1/push"
-        loki-retries: "3"
-        loki-max-backoff: "1s"
-        loki-external-labels: "service=checkout-api,source=flask-generator"
+    # No Loki logging driver here: the generator now simulates several
+    # services in one process, so a single static `service=checkout-api`
+    # external label would mislabel every line. traffic.py already pushes
+    # each log line to Loki directly via HTTP with its own correct
+    # per-service stream label -- this container just uses Docker's
+    # default logging driver for `docker logs` visibility.
     networks:
       - monitoring
     healthcheck:

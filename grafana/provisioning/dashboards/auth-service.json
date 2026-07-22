@@ -1,59 +1,48 @@
 {
-  "title": "Pool Exhaustion",
+  "title": "auth-service",
   "version": 1,
   "timezone": "utc",
   "editable": true,
   "panels": [
     {
-      "title": "Connections vs Max",
+      "title": "Session-Store Cache Hit Ratio",
       "type": "timeseries",
       "gridPos": {"h": 8, "w": 12, "x": 0, "y": 0},
       "targets": [
         {
-          "expr": "svc_active_connections{service=\"checkout-api\"}",
-          "legendFormat": "active connections",
+          "expr": "svc_cache_hit_ratio{service=\"auth-service\"}",
+          "legendFormat": "cache hit ratio",
           "refId": "A"
-        },
-        {
-          "expr": "svc_max_connections{service=\"checkout-api\"}",
-          "legendFormat": "max connections",
-          "refId": "B"
         }
       ],
       "fieldConfig": {
         "defaults": {
-          "unit": "short",
+          "unit": "percentunit",
           "min": 0,
-          "max": 250,
+          "max": 1,
           "thresholds": {
             "mode": "absolute",
             "steps": [
               {"color": "green", "value": null},
-              {"color": "orange", "value": 150},
-              {"color": "red", "value": 190}
+              {"color": "orange", "value": 0.85},
+              {"color": "red", "value": 0.70}
             ]
           }
         }
       },
       "options": {
-        "legend": {"show": true, "placement": "bottom"},
-        "tooltip": {"mode": "multi"}
+        "legend": {"show": true, "placement": "bottom"}
       }
     },
     {
-      "title": "p99 Latency & Pool Timeout Errors",
+      "title": "p99 Latency (login / logout / validate-session)",
       "type": "timeseries",
       "gridPos": {"h": 8, "w": 12, "x": 12, "y": 0},
       "targets": [
         {
-          "expr": "svc_p99_latency_ms{service=\"checkout-api\"}",
+          "expr": "svc_p99_latency_ms{service=\"auth-service\"}",
           "legendFormat": "{{endpoint}} p99 (ms)",
           "refId": "A"
-        },
-        {
-          "expr": "sum(rate(svc_errors_total{service=\"checkout-api\", error_type=\"pool_timeout\"}[1m])) or sum(irate(svc_errors_total{service=\"checkout-api\", error_type=\"pool_timeout\"}[30s]))",
-          "legendFormat": "pool timeouts / sec",
-          "refId": "B"
         }
       ],
       "fieldConfig": {
@@ -64,8 +53,8 @@
             "mode": "absolute",
             "steps": [
               {"color": "green", "value": null},
-              {"color": "orange", "value": 1000},
-              {"color": "red", "value": 1500}
+              {"color": "orange", "value": 200},
+              {"color": "red", "value": 400}
             ]
           }
         }
@@ -81,7 +70,7 @@
       "gridPos": {"h": 8, "w": 12, "x": 0, "y": 8},
       "targets": [
         {
-          "expr": "svc_error_rate_pct{service=\"checkout-api\"}",
+          "expr": "svc_error_rate_pct{service=\"auth-service\"}",
           "legendFormat": "{{endpoint}} error rate (%)",
           "refId": "A"
         }
@@ -102,12 +91,12 @@
       }
     },
     {
-      "title": "Pool Error Logs",
+      "title": "auth-service Logs",
       "type": "logs",
       "gridPos": {"h": 8, "w": 12, "x": 12, "y": 8},
       "targets": [
         {
-          "expr": "{service=\"checkout-api\"} |= \"could not obtain connection\"",
+          "expr": "{service=\"auth-service\"}",
           "refId": "A"
         }
       ],

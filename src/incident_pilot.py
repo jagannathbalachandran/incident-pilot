@@ -25,6 +25,7 @@ from langchain_chroma import Chroma
 
 from logging_config import setup_logging
 from query_logs import analyze_logs as _analyze_logs
+from query_logs import analyze_traces as _analyze_traces
 from query_logs import query_logs as _query_logs
 from request_context import get_request_id
 
@@ -144,14 +145,19 @@ class IncidentPilot:
     # Live metrics / logs query
     # ------------------------------------------------------------------
 
-    def query_logs(self, timeframe: str = "15m") -> dict:
+    def query_logs(self, timeframe: str = "15m", service: str | None = None) -> dict:
         """Query live metrics and logs, returning a dict with keys
         ``metrics``, ``logs``, and ``source``.
 
+        ``service=None`` (the default) queries across every simulated
+        service, which is what's needed to reconstruct a user journey
+        whose spans land in more than one service's log stream. Pass a
+        service name to scope the query to just that service.
+
         The result is cached in ``self._last_logs_query`` for the UI.
         """
-        logger.debug("query_logs(timeframe='%s')", timeframe)
-        self._last_logs_query = _query_logs(timeframe=timeframe)
+        logger.debug("query_logs(timeframe='%s', service='%s')", timeframe, service or "all")
+        self._last_logs_query = _query_logs(service=service, timeframe=timeframe)
         source = self._last_logs_query.get("source", "unknown")
         metrics_count = len(self._last_logs_query.get("metrics") or [])
         logs_count = len(self._last_logs_query.get("logs") or [])
@@ -174,17 +180,44 @@ class IncidentPilot:
         metrics = logs_result.get("metrics")
         if metrics:
             lines = []
-            for series in metrics[:8]:
-                name = series.get("metric", {}).get("__name__", "unknown")
+            for series in metrics[:12]:
+                m = series.get("metric", {})
+                name = m.get("__name__", "unknown")
+                svc = m.get("service", "")
+                endpoint = m.get("endpoint", "")
+                scope = f"service={svc}" + (f",endpoint={endpoint}" if endpoint else "")
                 values = series.get("values", [])
                 if values:
                     latest = values[-1][1]
-                    lines.append(f"  {name}: {latest} (latest)")
+                    lines.append(f"  {name}{{{scope}}}: {latest} (latest)")
             if lines:
                 parts.append("Live metrics (sampled):\n" + "\n".join(lines))
 
-        # --- Log analysis ---
+        # --- Distributed traces ---
         logs = logs_result.get("logs")
+        if logs:
+            traces = _analyze_traces(logs)
+            if traces["total_traces"]:
+                trace_blocks = [
+                    f"  Journeys observed: {traces['total_traces']} "
+                    f"({traces['failed_traces']} failed, {traces['affected_users']} user(s) affected)"
+                ]
+                if traces["break_points"]:
+                    trace_blocks.append("  Most common break points:")
+                    for bp in traces["break_points"]:
+                        trace_blocks.append(
+                            f"    {bp['service']}{bp['endpoint']} -> {bp['status_code']} ({bp['count']}x)"
+                        )
+                if traces["sample_path"]:
+                    path_str = " -> ".join(
+                        f"{s['service']}{s['endpoint']}({s['status_code']})" for s in traces["sample_path"]
+                    )
+                    trace_blocks.append(
+                        f"  Sample failed journey (trace_id={traces['sample_trace_id']}): {path_str}"
+                    )
+                parts.append("Distributed traces (login -> ... -> logout):\n" + "\n".join(trace_blocks))
+
+        # --- Log analysis ---
         if logs:
             analysis = _analyze_logs(logs)
             logger.debug("Log analysis: %d entries, error_rate=%.1f%%",
@@ -231,17 +264,25 @@ class IncidentPilot:
     # ------------------------------------------------------------------
 
     @staticmethod
-    def _parse_live_metrics(metrics: list) -> dict:
-        """Extract named metric values from the raw Prometheus series list.
+    def _parse_live_metrics(metrics: list, service: str = "checkout-api") -> dict:
+        """Extract named metric values for one service from the raw
+        Prometheus series list.
 
-        Returns a dict like ``{"p99_latency_ms": 1486, "error_rate_pct": 4.8, ...}``.
-        Only the **last** value from each series is kept.
+        Returns a dict like ``{"svc_p99_latency_ms": 1486, "svc_error_rate_pct": 4.8, ...}``.
+        Only the **last** value from each matching series is kept. The
+        contradiction-check machinery below is scoped to one service
+        (``checkout-api`` by default, matching where the pool/cache/fraud
+        scenarios default to) even though live queries now span every
+        simulated service.
         """
         parsed: dict[str, float] = {}
         if not metrics:
             return parsed
         for series in metrics:
-            name = series.get("metric", {}).get("__name__", "")
+            m = series.get("metric", {})
+            name = m.get("__name__", "")
+            if service and m.get("service") != service:
+                continue
             values = series.get("values", [])
             if name and values:
                 try:
@@ -257,10 +298,10 @@ class IncidentPilot:
 
         Returns one of ``"pool"``, ``"cache"``, ``"fraud"``, or ``"normal"``.
         """
-        error_rate = m.get("checkout_error_rate_pct", 0)
-        connections = m.get("checkout_active_connections", 0)
-        cache_hit = m.get("checkout_cache_hit_ratio", 1.0)
-        latency = m.get("checkout_p99_latency_ms", 0)
+        error_rate = m.get("svc_error_rate_pct", 0)
+        connections = m.get("svc_active_connections", 0)
+        cache_hit = m.get("svc_cache_hit_ratio", 1.0)
+        latency = m.get("svc_p99_latency_ms", 0)
 
         # Priority order: most distinctive signature first
         # Pool: high error rate + high connections
@@ -367,8 +408,10 @@ class IncidentPilot:
 
         Returns a dict with keys:
           - ``chunks``: list of RAG chunk dicts ``{source, section, content}``
-          - ``metrics``: live metrics snapshot ``{name, value}`` list
+          - ``metrics``: live metrics snapshot ``{name, service, endpoint, value}`` list
           - ``log_analysis``: structured log analysis dict (from ``analyze_logs``)
+          - ``trace_summary``: distributed-trace summary dict (from ``analyze_traces``)
+          - ``trace_id``: sample failed trace's ID, if one was reconstructed
           - ``augmented_input``: the full prompt sent to the LLM
           - ``source``: data source label ("live" | "static_fallback" | "unavailable")
         """
@@ -383,6 +426,7 @@ class IncidentPilot:
         user_input: str,
         live_data_timeframe: str = "15m",
         logs_result: dict | None = None,
+        service: str | None = None,
     ) -> str:
         """Run a full triage query: RAG retrieval + live metrics + LLM.
 
@@ -391,12 +435,14 @@ class IncidentPilot:
             live_data_timeframe: Time window for live data (default 15m).
             logs_result: Pre-queried logs result to avoid querying twice.
                          If None, queries live data automatically.
+            service: Scope the live query to one service; None queries
+                     across all of them (needed for journey reconstruction).
 
         Returns the LLM's cited triage summary as a string.
         """
         req_id = get_request_id() or "-"
-        logger.info("Processing query [req=%s]: '%s...' (timeframe=%s)",
-                     req_id, user_input[:80], live_data_timeframe)
+        logger.info("Processing query [req=%s]: '%s...' (timeframe=%s, service=%s)",
+                     req_id, user_input[:80], live_data_timeframe, service or "all")
 
         # 1. RAG retrieval
         chunks = self.retrieve(user_input)
@@ -404,7 +450,7 @@ class IncidentPilot:
 
         # 2. Live metrics / logs (use pre-queried result if provided)
         if logs_result is None:
-            logs_result = self.query_logs(timeframe=live_data_timeframe)
+            logs_result = self.query_logs(timeframe=live_data_timeframe, service=service)
         live_block = self._format_live_data(logs_result)
 
         # 3. Detect contradictions between user query and live data
@@ -443,22 +489,30 @@ class IncidentPilot:
         trace_metrics = []
         metrics_raw = (logs_result or {}).get("metrics", [])
         if metrics_raw:
-            for series in metrics_raw[:8]:
-                name = series.get("metric", {}).get("__name__", "unknown")
+            for series in metrics_raw[:12]:
+                m = series.get("metric", {})
+                name = m.get("__name__", "unknown")
                 values = series.get("values", [])
                 if values:
-                    trace_metrics.append({"name": name, "value": values[-1][1]})
+                    trace_metrics.append({
+                        "name": name, "service": m.get("service", ""),
+                        "endpoint": m.get("endpoint", ""), "value": values[-1][1],
+                    })
 
         trace_logs = logs_result or {}
         trace_log_analysis = {}
+        trace_summary = {}
         log_entries = trace_logs.get("logs")
         if log_entries:
             trace_log_analysis = _analyze_logs(log_entries)
+            trace_summary = _analyze_traces(log_entries)
 
         self._last_trace = {
             "chunks": chunks,
             "metrics": trace_metrics,
             "log_analysis": trace_log_analysis,
+            "trace_summary": trace_summary,
+            "trace_id": trace_summary.get("sample_trace_id"),
             "augmented_input": augmented_input,
             "source": (logs_result or {}).get("source", "unavailable"),
             "contradiction": contradiction_warning,

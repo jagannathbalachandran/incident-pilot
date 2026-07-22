@@ -108,62 +108,70 @@ class TestContradictionDetection(unittest.TestCase):
 
     def test_parse_live_metrics_extracts_values(self):
         metrics = [
-            {"metric": {"__name__": "checkout_p99_latency_ms"}, "values": [["1000", "1486.2"]]},
-            {"metric": {"__name__": "checkout_error_rate_pct"}, "values": [["1000", "4.77"]]},
-            {"metric": {"__name__": "checkout_active_connections"}, "values": [["1000", "200"]]},
+            {"metric": {"__name__": "svc_p99_latency_ms", "service": "checkout-api"}, "values": [["1000", "1486.2"]]},
+            {"metric": {"__name__": "svc_error_rate_pct", "service": "checkout-api"}, "values": [["1000", "4.77"]]},
+            {"metric": {"__name__": "svc_active_connections", "service": "checkout-api"}, "values": [["1000", "200"]]},
         ]
         result = IncidentPilot._parse_live_metrics(metrics)
-        self.assertAlmostEqual(result["checkout_p99_latency_ms"], 1486.2)
-        self.assertAlmostEqual(result["checkout_error_rate_pct"], 4.77)
-        self.assertEqual(result["checkout_active_connections"], 200.0)
+        self.assertAlmostEqual(result["svc_p99_latency_ms"], 1486.2)
+        self.assertAlmostEqual(result["svc_error_rate_pct"], 4.77)
+        self.assertEqual(result["svc_active_connections"], 200.0)
+
+    def test_parse_live_metrics_filters_by_service(self):
+        metrics = [
+            {"metric": {"__name__": "svc_error_rate_pct", "service": "payment-service"}, "values": [["1000", "9.0"]]},
+            {"metric": {"__name__": "svc_error_rate_pct", "service": "checkout-api"}, "values": [["1000", "1.0"]]},
+        ]
+        result = IncidentPilot._parse_live_metrics(metrics)
+        self.assertEqual(result["svc_error_rate_pct"], 1.0)
 
     def test_parse_live_metrics_empty(self):
         self.assertEqual(IncidentPilot._parse_live_metrics([]), {})
 
     def test_parse_live_metrics_skips_malformed(self):
         metrics = [
-            {"metric": {"__name__": "checkout_p99_latency_ms"}, "values": [["1000", "not_a_number"]]},
-            {"metric": {"__name__": "good_metric"}, "values": [["1000", "42"]]},
+            {"metric": {"__name__": "svc_p99_latency_ms", "service": "checkout-api"}, "values": [["1000", "not_a_number"]]},
+            {"metric": {"__name__": "good_metric", "service": "checkout-api"}, "values": [["1000", "42"]]},
         ]
         result = IncidentPilot._parse_live_metrics(metrics)
-        self.assertNotIn("checkout_p99_latency_ms", result)
+        self.assertNotIn("svc_p99_latency_ms", result)
         self.assertEqual(result["good_metric"], 42.0)
 
     # --- _classify_data ---
 
     def test_classify_data_pool(self):
         m = {
-            "checkout_error_rate_pct": 4.8,
-            "checkout_active_connections": 185,
-            "checkout_cache_hit_ratio": 0.94,
-            "checkout_p99_latency_ms": 1500,
+            "svc_error_rate_pct": 4.8,
+            "svc_active_connections": 185,
+            "svc_cache_hit_ratio": 0.94,
+            "svc_p99_latency_ms": 1500,
         }
         self.assertEqual(IncidentPilot._classify_data(m), "pool")
 
     def test_classify_data_cache(self):
         m = {
-            "checkout_error_rate_pct": 0.1,
-            "checkout_active_connections": 118,
-            "checkout_cache_hit_ratio": 0.41,
-            "checkout_p99_latency_ms": 950,
+            "svc_error_rate_pct": 0.1,
+            "svc_active_connections": 118,
+            "svc_cache_hit_ratio": 0.41,
+            "svc_p99_latency_ms": 950,
         }
         self.assertEqual(IncidentPilot._classify_data(m), "cache")
 
     def test_classify_data_fraud(self):
         m = {
-            "checkout_error_rate_pct": 12.0,
-            "checkout_active_connections": 118,
-            "checkout_cache_hit_ratio": 0.95,
-            "checkout_p99_latency_ms": 836,
+            "svc_error_rate_pct": 12.0,
+            "svc_active_connections": 118,
+            "svc_cache_hit_ratio": 0.95,
+            "svc_p99_latency_ms": 836,
         }
         self.assertEqual(IncidentPilot._classify_data(m), "fraud")
 
     def test_classify_data_normal(self):
         m = {
-            "checkout_error_rate_pct": 0.05,
-            "checkout_active_connections": 118,
-            "checkout_cache_hit_ratio": 0.95,
-            "checkout_p99_latency_ms": 380,
+            "svc_error_rate_pct": 0.05,
+            "svc_active_connections": 118,
+            "svc_cache_hit_ratio": 0.95,
+            "svc_p99_latency_ms": 380,
         }
         self.assertEqual(IncidentPilot._classify_data(m), "normal")
 
@@ -225,10 +233,10 @@ class TestContradictionDetection(unittest.TestCase):
     def test_detect_contradictions_cache_query_with_pool_data(self):
         """User asks about cache failover but data shows pool exhaustion."""
         metrics = [
-            {"metric": {"__name__": "checkout_error_rate_pct"}, "values": [["1000", "4.8"]]},
-            {"metric": {"__name__": "checkout_active_connections"}, "values": [["1000", "185"]]},
-            {"metric": {"__name__": "checkout_cache_hit_ratio"}, "values": [["1000", "0.94"]]},
-            {"metric": {"__name__": "checkout_p99_latency_ms"}, "values": [["1000", "1500"]]},
+            {"metric": {"__name__": "svc_error_rate_pct", "service": "checkout-api"}, "values": [["1000", "4.8"]]},
+            {"metric": {"__name__": "svc_active_connections", "service": "checkout-api"}, "values": [["1000", "185"]]},
+            {"metric": {"__name__": "svc_cache_hit_ratio", "service": "checkout-api"}, "values": [["1000", "0.94"]]},
+            {"metric": {"__name__": "svc_p99_latency_ms", "service": "checkout-api"}, "values": [["1000", "1500"]]},
         ]
         result = IncidentPilot._detect_contradictions(
             "cache failover in last hour", {"metrics": metrics}
@@ -241,8 +249,8 @@ class TestContradictionDetection(unittest.TestCase):
     def test_detect_contradictions_pool_query_with_pool_data(self):
         """User asks about pool and data shows pool — no contradiction."""
         metrics = [
-            {"metric": {"__name__": "checkout_error_rate_pct"}, "values": [["1000", "4.8"]]},
-            {"metric": {"__name__": "checkout_active_connections"}, "values": [["1000", "185"]]},
+            {"metric": {"__name__": "svc_error_rate_pct", "service": "checkout-api"}, "values": [["1000", "4.8"]]},
+            {"metric": {"__name__": "svc_active_connections", "service": "checkout-api"}, "values": [["1000", "185"]]},
         ]
         result = IncidentPilot._detect_contradictions(
             "connection pool is exhausted", {"metrics": metrics}

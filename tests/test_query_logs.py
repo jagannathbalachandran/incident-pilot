@@ -34,11 +34,11 @@ import query_logs as ql
 def _fake_prometheus_response(series_count: int = 5, include_phase: bool = True) -> dict:
     """Build a mock Prometheus query_range response body."""
     names = [
-        "checkout_p99_latency_ms",
-        "checkout_error_rate_pct",
-        "checkout_active_connections",
-        "checkout_cache_hit_ratio",
-        "checkout_max_connections",
+        "svc_p99_latency_ms",
+        "svc_error_rate_pct",
+        "svc_active_connections",
+        "svc_cache_hit_ratio",
+        "svc_max_connections",
     ]
     results = []
     for i in range(min(series_count, len(names))):
@@ -257,20 +257,20 @@ class TestLoadMetricsFallback(unittest.TestCase):
 
     @patch("query_logs.DATA_DIR", Path("/nonexistent"))
     def test_missing_metrics_dir_returns_none(self):
-        self.assertIsNone(ql._load_metrics_fallback())
+        self.assertIsNone(ql._load_metrics_fallback(service="checkout-api"))
 
     @patch("pathlib.Path.exists", return_value=False)
     @patch("pathlib.Path.is_dir", return_value=True)
     @patch("query_logs.DATA_DIR")
     def test_no_matching_files_returns_none(self, mock_dir, mock_is_dir, mock_exists):
-        self.assertIsNone(ql._load_metrics_fallback())
+        self.assertIsNone(ql._load_metrics_fallback(service="checkout-api"))
 
     @patch("pathlib.Path.is_dir", return_value=True)
     @patch("builtins.open", side_effect=OSError("permission denied"))
     @patch("pathlib.Path.exists", return_value=True)
     @patch("query_logs.DATA_DIR")
     def test_oserror_returns_none(self, mock_dir, mock_exists, mock_open, mock_is_dir):
-        self.assertIsNone(ql._load_metrics_fallback())
+        self.assertIsNone(ql._load_metrics_fallback(service="checkout-api"))
 
     @patch("pathlib.Path.is_dir", return_value=True)
     @patch("builtins.open", return_value=MagicMock(
@@ -280,18 +280,36 @@ class TestLoadMetricsFallback(unittest.TestCase):
     ))
     @patch("pathlib.Path.exists", return_value=True)
     @patch("query_logs.DATA_DIR")
-    def test_successful_read_returns_five_series(
+    def test_successful_read_returns_five_series_for_one_service(
         self, mock_dir, mock_exists, mock_open, mock_is_dir
     ):
-        result = ql._load_metrics_fallback()
+        result = ql._load_metrics_fallback(service="checkout-api")
         self.assertIsNotNone(result)
         self.assertEqual(len(result), 5)
         names = {s["metric"]["__name__"] for s in result}
-        self.assertIn("checkout_p99_latency_ms", names)
-        self.assertIn("checkout_error_rate_pct", names)
-        self.assertIn("checkout_active_connections", names)
-        self.assertIn("checkout_cache_hit_ratio", names)
-        self.assertIn("checkout_max_connections", names)
+        self.assertIn("svc_p99_latency_ms", names)
+        self.assertIn("svc_error_rate_pct", names)
+        self.assertIn("svc_active_connections", names)
+        self.assertIn("svc_cache_hit_ratio", names)
+        self.assertIn("svc_max_connections", names)
+        for s in result:
+            self.assertEqual(s["metric"]["service"], "checkout-api")
+
+    @patch("pathlib.Path.is_dir", return_value=True)
+    @patch("builtins.open", return_value=MagicMock(
+        __enter__=MagicMock(return_value=MagicMock(
+            read=MagicMock(return_value=_fake_metrics_json_content())
+        ))
+    ))
+    @patch("pathlib.Path.exists", return_value=True)
+    @patch("query_logs.DATA_DIR")
+    def test_no_service_merges_every_service(
+        self, mock_dir, mock_exists, mock_open, mock_is_dir
+    ):
+        """service=None (the default) fans out across every service's fallback file."""
+        result = ql._load_metrics_fallback(service=None)
+        self.assertIsNotNone(result)
+        self.assertEqual(len(result), 5 * len(ql.ALL_SERVICES))
 
 
 # ===================================================================
@@ -303,7 +321,7 @@ class TestLoadLogsFallback(unittest.TestCase):
 
     @patch("query_logs.DATA_DIR", Path("/nonexistent"))
     def test_missing_logs_dir_returns_none(self):
-        self.assertIsNone(ql._load_logs_fallback())
+        self.assertIsNone(ql._load_logs_fallback(service="checkout-api"))
 
     @patch("pathlib.Path.is_dir", return_value=True)
     @patch("builtins.open", return_value=MagicMock(
@@ -318,7 +336,7 @@ class TestLoadLogsFallback(unittest.TestCase):
     def test_successful_read_returns_entries(
         self, mock_dir, mock_exists, mock_open, mock_is_dir
     ):
-        result = ql._load_logs_fallback()
+        result = ql._load_logs_fallback(service="checkout-api")
         self.assertIsNotNone(result)
         self.assertEqual(len(result), 3)
         for entry in result:
@@ -531,6 +549,88 @@ class TestAnalyzeLogs(unittest.TestCase):
         # (first two at 0s and 15s = 15s gap → cluster; 3rd at 60s = 45s gap from 2nd → separate)
         # Each cluster needs >= 2 errors, so only first cluster qualifies
         self.assertEqual(result["error_cluster_count"], 1)
+
+
+# ===================================================================
+# analyze_traces
+# ===================================================================
+
+
+def _span(trace_id, span_id, parent, service, endpoint, status, user_id):
+    return {
+        "timestamp": "2026-07-18T10:20:00Z",
+        "line": json.dumps({
+            "trace_id": trace_id, "span_id": span_id, "parent_span_id": parent,
+            "service": service, "endpoint": endpoint, "status_code": status,
+            "latency_ms": 100.0, "user_id": user_id, "request_id": f"req-{span_id}",
+            "level": "ERROR" if status >= 500 else "INFO", "message": "ok",
+        }),
+        "labels": {"service": service},
+    }
+
+
+class TestAnalyzeTraces(unittest.TestCase):
+    """analyze_traces groups spans by trace_id and reconstructs journeys."""
+
+    def _successful_trace(self):
+        return [
+            _span("trA", "a1", "", "auth-service", "/login", 200, "user-1"),
+            _span("trA", "a2", "", "listing-service", "/listings", 200, "user-1"),
+            _span("trA", "a3", "", "checkout-api", "/checkout", 200, "user-1"),
+            _span("trA", "a4", "", "checkout-api", "/payment", 200, "user-1"),
+            _span("trA", "a5", "a4", "payment-service", "/charge", 200, "user-1"),
+            _span("trA", "a6", "", "auth-service", "/logout", 200, "user-1"),
+        ]
+
+    def _failed_trace(self):
+        return [
+            _span("trB", "b1", "", "auth-service", "/login", 200, "user-2"),
+            _span("trB", "b2", "", "listing-service", "/listings", 200, "user-2"),
+            _span("trB", "b3", "", "checkout-api", "/checkout", 200, "user-2"),
+            _span("trB", "b4", "", "checkout-api", "/payment", 500, "user-2"),
+            _span("trB", "b5", "b4", "payment-service", "/charge", 500, "user-2"),
+        ]
+
+    def test_empty_entries(self):
+        result = ql.analyze_traces([])
+        self.assertEqual(result["total_traces"], 0)
+        self.assertIsNone(result["sample_path"])
+
+    def test_counts_total_and_failed_traces(self):
+        entries = self._successful_trace() + self._failed_trace()
+        result = ql.analyze_traces(entries)
+        self.assertEqual(result["total_traces"], 2)
+        self.assertEqual(result["failed_traces"], 1)
+        self.assertEqual(result["affected_users"], 1)
+
+    def test_break_point_identifies_first_failing_hop(self):
+        entries = self._successful_trace() + self._failed_trace()
+        result = ql.analyze_traces(entries)
+        self.assertEqual(len(result["break_points"]), 1)
+        bp = result["break_points"][0]
+        self.assertEqual(bp["service"], "checkout-api")
+        self.assertEqual(bp["endpoint"], "/payment")
+        self.assertEqual(bp["status_code"], 500)
+        self.assertEqual(bp["count"], 1)
+
+    def test_sample_path_is_ordered_root_before_child_and_stops_at_failure(self):
+        entries = self._successful_trace() + self._failed_trace()
+        result = ql.analyze_traces(entries)
+        self.assertEqual(result["sample_trace_id"], "trB")
+        path = [f"{s['service']}{s['endpoint']}" for s in result["sample_path"]]
+        # login -> listings -> checkout -> payment -> charge (child of payment),
+        # and crucially never reaches logout since the journey failed at payment.
+        self.assertEqual(
+            path,
+            ["auth-service/login", "listing-service/listings", "checkout-api/checkout",
+             "checkout-api/payment", "payment-service/charge"],
+        )
+
+    def test_only_successful_traces_have_no_failures(self):
+        result = ql.analyze_traces(self._successful_trace())
+        self.assertEqual(result["total_traces"], 1)
+        self.assertEqual(result["failed_traces"], 0)
+        self.assertIsNone(result["sample_path"])
 
 
 if __name__ == "__main__":

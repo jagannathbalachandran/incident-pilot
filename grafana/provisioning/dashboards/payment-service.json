@@ -1,5 +1,5 @@
 {
-  "title": "Pool Exhaustion",
+  "title": "payment-service",
   "version": 1,
   "timezone": "utc",
   "editable": true,
@@ -10,12 +10,12 @@
       "gridPos": {"h": 8, "w": 12, "x": 0, "y": 0},
       "targets": [
         {
-          "expr": "svc_active_connections{service=\"checkout-api\"}",
+          "expr": "svc_active_connections{service=\"payment-service\"}",
           "legendFormat": "active connections",
           "refId": "A"
         },
         {
-          "expr": "svc_max_connections{service=\"checkout-api\"}",
+          "expr": "svc_max_connections{service=\"payment-service\"}",
           "legendFormat": "max connections",
           "refId": "B"
         }
@@ -24,13 +24,13 @@
         "defaults": {
           "unit": "short",
           "min": 0,
-          "max": 250,
+          "max": 100,
           "thresholds": {
             "mode": "absolute",
             "steps": [
               {"color": "green", "value": null},
-              {"color": "orange", "value": 150},
-              {"color": "red", "value": 190}
+              {"color": "orange", "value": 60},
+              {"color": "red", "value": 75}
             ]
           }
         }
@@ -46,12 +46,12 @@
       "gridPos": {"h": 8, "w": 12, "x": 12, "y": 0},
       "targets": [
         {
-          "expr": "svc_p99_latency_ms{service=\"checkout-api\"}",
-          "legendFormat": "{{endpoint}} p99 (ms)",
+          "expr": "svc_p99_latency_ms{service=\"payment-service\"}",
+          "legendFormat": "p99 latency (ms)",
           "refId": "A"
         },
         {
-          "expr": "sum(rate(svc_errors_total{service=\"checkout-api\", error_type=\"pool_timeout\"}[1m])) or sum(irate(svc_errors_total{service=\"checkout-api\", error_type=\"pool_timeout\"}[30s]))",
+          "expr": "sum(rate(svc_errors_total{service=\"payment-service\", error_type=\"pool_timeout\"}[1m]))",
           "legendFormat": "pool timeouts / sec",
           "refId": "B"
         }
@@ -64,8 +64,8 @@
             "mode": "absolute",
             "steps": [
               {"color": "green", "value": null},
-              {"color": "orange", "value": 1000},
-              {"color": "red", "value": 1500}
+              {"color": "orange", "value": 400},
+              {"color": "red", "value": 700}
             ]
           }
         }
@@ -81,8 +81,8 @@
       "gridPos": {"h": 8, "w": 12, "x": 0, "y": 8},
       "targets": [
         {
-          "expr": "svc_error_rate_pct{service=\"checkout-api\"}",
-          "legendFormat": "{{endpoint}} error rate (%)",
+          "expr": "svc_error_rate_pct{service=\"payment-service\"}",
+          "legendFormat": "error rate (%)",
           "refId": "A"
         }
       ],
@@ -107,7 +107,7 @@
       "gridPos": {"h": 8, "w": 12, "x": 12, "y": 8},
       "targets": [
         {
-          "expr": "{service=\"checkout-api\"} |= \"could not obtain connection\"",
+          "expr": "{service=\"payment-service\"} |= \"could not obtain connection\"",
           "refId": "A"
         }
       ],

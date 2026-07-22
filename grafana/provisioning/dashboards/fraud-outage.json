@@ -5,14 +5,19 @@
   "editable": true,
   "panels": [
     {
-      "title": "Error Rate (Fraud Spike)",
+      "title": "Error Rate (Fraud Spike) — fraud-scoring-svc vs checkout-api",
       "type": "timeseries",
       "gridPos": {"h": 8, "w": 12, "x": 0, "y": 0},
       "targets": [
         {
-          "expr": "checkout_error_rate_pct{service=\"checkout-api\"}",
-          "legendFormat": "error rate (%)",
+          "expr": "svc_error_rate_pct{service=\"fraud-scoring-svc\"}",
+          "legendFormat": "fraud-scoring-svc error rate (%)",
           "refId": "A"
+        },
+        {
+          "expr": "svc_error_rate_pct{service=\"checkout-api\", endpoint=\"/checkout\"}",
+          "legendFormat": "checkout-api /checkout error rate (%) (cascade)",
+          "refId": "B"
         }
       ],
       "fieldConfig": {
@@ -37,9 +42,14 @@
       "gridPos": {"h": 8, "w": 12, "x": 12, "y": 0},
       "targets": [
         {
-          "expr": "checkout_p99_latency_ms{service=\"checkout-api\"}",
-          "legendFormat": "p99 latency (ms)",
+          "expr": "svc_p99_latency_ms{service=\"fraud-scoring-svc\"}",
+          "legendFormat": "fraud-scoring-svc p99 (ms)",
           "refId": "A"
+        },
+        {
+          "expr": "svc_upstream_duration_ms_sum{service=\"checkout-api\", upstream=\"fraud-scoring-svc\"} / svc_upstream_duration_ms_count{service=\"checkout-api\", upstream=\"fraud-scoring-svc\"}",
+          "legendFormat": "checkout-api -> fraud-scoring-svc avg call latency (ms)",
+          "refId": "B"
         }
       ],
       "fieldConfig": {
@@ -55,9 +65,14 @@
       "gridPos": {"h": 6, "w": 12, "x": 0, "y": 8},
       "targets": [
         {
-          "expr": "sum(rate(checkout_errors_total{service=\"checkout-api\", error_type=\"fraud_svc_unavailable\"}[1m]))",
-          "legendFormat": "fraud errors / sec",
+          "expr": "sum(rate(svc_errors_total{service=\"fraud-scoring-svc\", error_type=\"fraud_svc_unavailable\"}[1m]))",
+          "legendFormat": "fraud-scoring-svc errors / sec",
           "refId": "A"
+        },
+        {
+          "expr": "sum(rate(svc_errors_total{service=\"checkout-api\", error_type=\"upstream_error\"}[1m]))",
+          "legendFormat": "checkout-api upstream errors / sec (cascade)",
+          "refId": "B"
         }
       ],
       "fieldConfig": {
@@ -73,7 +88,7 @@
       "gridPos": {"h": 6, "w": 12, "x": 12, "y": 8},
       "targets": [
         {
-          "expr": "{service=\"checkout-api\"} |= \"fraud-scoring-svc\"",
+          "expr": "{service=\"fraud-scoring-svc\"} |= \"fraud-scoring-svc\"",
           "refId": "A"
         }
       ],

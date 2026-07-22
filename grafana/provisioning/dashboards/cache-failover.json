@@ -10,7 +10,7 @@
       "gridPos": {"h": 8, "w": 12, "x": 0, "y": 0},
       "targets": [
         {
-          "expr": "checkout_cache_hit_ratio{service=\"checkout-api\"}",
+          "expr": "svc_cache_hit_ratio{service=\"checkout-api\"}",
           "legendFormat": "cache hit ratio",
           "refId": "A"
         }
@@ -40,8 +40,8 @@
       "gridPos": {"h": 8, "w": 12, "x": 12, "y": 0},
       "targets": [
         {
-          "expr": "checkout_p99_latency_ms{service=\"checkout-api\"}",
-          "legendFormat": "p99 latency (ms)",
+          "expr": "svc_p99_latency_ms{service=\"checkout-api\"}",
+          "legendFormat": "{{endpoint}} p99 (ms)",
           "refId": "A"
         }
       ],
@@ -66,8 +66,8 @@
       "gridPos": {"h": 8, "w": 12, "x": 0, "y": 8},
       "targets": [
         {
-          "expr": "checkout_error_rate_pct{service=\"checkout-api\"}",
-          "legendFormat": "error rate (%)",
+          "expr": "svc_error_rate_pct{service=\"checkout-api\"}",
+          "legendFormat": "{{endpoint}} error rate (%)",
           "refId": "A"
         }
       ],

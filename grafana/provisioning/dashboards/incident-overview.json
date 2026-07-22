@@ -1,17 +1,17 @@
 {
   "title": "Incident Overview",
-  "version": 1,
+  "version": 2,
   "timezone": "utc",
   "editable": true,
   "panels": [
     {
-      "title": "p99 Latency",
+      "title": "p99 Latency — all services",
       "type": "timeseries",
       "gridPos": {"h": 8, "w": 12, "x": 0, "y": 0},
       "targets": [
         {
-          "expr": "checkout_p99_latency_ms{service=\"checkout-api\"}",
-          "legendFormat": "p99 latency (ms)",
+          "expr": "svc_p99_latency_ms",
+          "legendFormat": "{{service}}{{endpoint}}",
           "refId": "A"
         }
       ],
@@ -35,13 +35,13 @@
       }
     },
     {
-      "title": "Error Rate",
+      "title": "Error Rate — all services",
       "type": "timeseries",
       "gridPos": {"h": 8, "w": 12, "x": 12, "y": 0},
       "targets": [
         {
-          "expr": "checkout_error_rate_pct{service=\"checkout-api\"}",
-          "legendFormat": "error rate (%)",
+          "expr": "svc_error_rate_pct",
+          "legendFormat": "{{service}}{{endpoint}}",
           "refId": "A"
         }
       ],
@@ -65,18 +65,18 @@
       }
     },
     {
-      "title": "Active Connections",
+      "title": "Active Connections vs Max — pool-backed services",
       "type": "timeseries",
       "gridPos": {"h": 8, "w": 12, "x": 0, "y": 8},
       "targets": [
         {
-          "expr": "checkout_active_connections{service=\"checkout-api\"}",
-          "legendFormat": "active",
+          "expr": "svc_active_connections",
+          "legendFormat": "{{service}} active",
           "refId": "A"
         },
         {
-          "expr": "checkout_max_connections{service=\"checkout-api\"}",
-          "legendFormat": "max",
+          "expr": "svc_max_connections",
+          "legendFormat": "{{service}} max",
           "refId": "B"
         }
       ],
@@ -84,7 +84,6 @@
         "defaults": {
           "unit": "short",
           "min": 0,
-          "max": 250,
           "thresholds": {
             "mode": "absolute",
             "steps": [
@@ -101,13 +100,13 @@
       }
     },
     {
-      "title": "Cache Hit Ratio",
+      "title": "Cache Hit Ratio — cache-backed services",
       "type": "timeseries",
       "gridPos": {"h": 8, "w": 12, "x": 12, "y": 8},
       "targets": [
         {
-          "expr": "checkout_cache_hit_ratio{service=\"checkout-api\"}",
-          "legendFormat": "cache hit ratio",
+          "expr": "svc_cache_hit_ratio",
+          "legendFormat": "{{service}}",
           "refId": "A"
         }
       ],
@@ -132,13 +131,13 @@
       }
     },
     {
-      "title": "Errors by Type",
+      "title": "Errors by Type — all services",
       "type": "bargauge",
       "gridPos": {"h": 6, "w": 12, "x": 0, "y": 16},
       "targets": [
         {
-          "expr": "sum by (error_type) (rate(checkout_errors_total{service=\"checkout-api\"}[1m]))",
-          "legendFormat": "{{error_type}}",
+          "expr": "sum by (service, error_type) (rate(svc_errors_total[1m]))",
+          "legendFormat": "{{service}} / {{error_type}}",
           "refId": "A"
         }
       ],
@@ -155,18 +154,18 @@
       }
     },
     {
-      "title": "Recent Error Logs",
+      "title": "Recent Error Logs — all services",
       "type": "logs",
       "gridPos": {"h": 6, "w": 12, "x": 12, "y": 16},
       "targets": [
         {
-          "expr": "{service=\"checkout-api\"} |= \"ERROR\"",
+          "expr": "{source=\"incident-generator\"} |= \"ERROR\"",
           "refId": "A"
         }
       ],
       "datasource": "Loki",
       "options": {
-        "showLabels": false,
+        "showLabels": true,
         "showTime": true,
         "wrapLogMessage": true,
         "prettifyLogs": true

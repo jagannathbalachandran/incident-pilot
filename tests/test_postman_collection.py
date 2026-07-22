@@ -102,7 +102,7 @@ class TestPostmanHealthChecks:
         resp = _make_request(m, u, h, b)
         assert resp.status_code == 200
         data = resp.json()
-        assert data["service"] == "flask-generator"
+        assert data["service"] == "incident-generator"
         assert data["status"] == "ok"
         assert REQ_ID_PATTERN.match(data["request_id"])
         assert REQ_ID_PATTERN.match(resp.headers.get("X-Request-ID", ""))
@@ -200,7 +200,7 @@ class TestPostmanIncidents:
         data = resp.json()
         assert data["status"] in ("resolved", "no_active_incident")
         if data["status"] == "resolved":
-            assert data["phase"] == "resolved"
+            assert all(r["phase"] == "resolved" for r in data["resolved"])
         assert REQ_ID_PATTERN.match(data["request_id"])
         assert REQ_ID_PATTERN.match(resp.headers.get("X-Request-ID", ""))
 
@@ -219,12 +219,14 @@ class TestPostmanIncidents:
         resp = _make_request(m, u, h, b)
         assert resp.status_code == 200
         data = resp.json()
-        assert "kind" in data
-        assert "phase" in data
-        assert "tick_count" in data
-        assert "p99_latency_ms" in data
-        assert "error_rate_pct" in data
-        assert "active_connections" in data
+        assert "active" in data
+        assert "count" in data
+        assert data["count"] == len(data["active"])
+        for incident in data["active"]:
+            assert "kind" in incident
+            assert "service" in incident
+            assert "phase" in incident
+            assert "tick_count" in incident
         assert REQ_ID_PATTERN.match(data["request_id"])
 
     def test_fastapi_metrics(self):
@@ -234,11 +236,11 @@ class TestPostmanIncidents:
         assert resp.status_code == 200
         assert "text/plain" in resp.headers.get("Content-Type", "")
         body = resp.text
-        assert "checkout_p99_latency_ms" in body
-        assert "checkout_error_rate_pct" in body
-        assert "checkout_active_connections" in body
-        assert "checkout_max_connections" in body
-        assert "checkout_cache_hit_ratio" in body
+        assert "svc_p99_latency_ms" in body
+        assert "svc_error_rate_pct" in body
+        assert "svc_active_connections" in body
+        assert "svc_max_connections" in body
+        assert "svc_cache_hit_ratio" in body
         assert resp.headers.get("X-Request-ID") is None
 
     def test_openapi_swagger_ui(self):
@@ -263,7 +265,7 @@ class TestPostmanIncidents:
         spec = resp.json()
         assert "openapi" in spec
         assert spec["info"]["title"] == "Incident Generator"
-        assert spec["info"]["version"] == "3.0.0"
+        assert spec["info"]["version"] == "4.0.0"
         expected_paths = ["/health", "/metrics", "/api/incidents/{kind}/trigger",
                           "/api/incidents/{kind}/resolve", "/api/incidents/trigger-random",
                           "/api/incidents/state"]
@@ -404,8 +406,9 @@ class TestPostmanLifecycle:
         resp = requests.get(f"{BASE_URLS['api_url']}/api/incidents/state", timeout=5)
         assert resp.status_code == 200
         data = resp.json()
-        assert data["kind"] == "pool"
-        assert data["phase"] == "climbing"
+        assert data["count"] == 1
+        assert data["active"][0]["kind"] == "pool"
+        assert data["active"][0]["phase"] == "climbing"
 
         # 4. Resolve
         resp = requests.post(f"{BASE_URLS['api_url']}/api/incidents/pool/resolve", timeout=5)
@@ -416,4 +419,4 @@ class TestPostmanLifecycle:
         # 5. Verify baseline
         resp = requests.get(f"{BASE_URLS['api_url']}/api/incidents/state", timeout=5)
         assert resp.status_code == 200
-        assert resp.json()["kind"] == "none"
+        assert resp.json()["count"] == 0

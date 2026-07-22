@@ -3,16 +3,19 @@ app.py
 
 FastAPI application entry point.  Starts the background tick loop and exposes:
 
-  GET  /metrics                 — Prometheus scrape endpoint
-  GET  /health                  — Health check (uses HealthResponse)
+  GET  /metrics                       — Prometheus scrape endpoint
+  GET  /health                        — Health check (uses HealthResponse)
+  GET  /api/services                  — Topology catalog + canonical journey
   POST /api/incidents/{kind}/trigger  — Start a scenario (uses TriggerRequest)
   POST /api/incidents/{kind}/resolve  — Force-resolve
-  POST /api/incidents/trigger-random  — Random scenario
-  GET  /api/incidents/state          — Current state
+  POST /api/incidents/trigger-random  — Random scenario on a random service
+  GET  /api/incidents/state           — Every currently-active incident
 
 Every API response includes a ``request_id`` field for cross-service log
-correlation.  The request ID also flows into the log format and into Loki
-log entries emitted by ``log_generator.emit_logs()``.
+correlation. This is a *different* ID space from the ``trace_id``/per-span
+``request_id`` that ``traffic.py`` mints for simulated user journeys — this
+one identifies an operator's API call (a trigger/resolve/health request),
+not a simulated end-user request.
 
 FastAPI automatically generates OpenAPI docs:
   - Swagger UI: http://localhost:5001/docs
@@ -26,6 +29,7 @@ Usage:
 
 import logging
 import os
+import random as _random
 import threading
 import time
 import uuid
@@ -36,21 +40,27 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, PlainTextResponse
 from prometheus_client import generate_latest, CONTENT_TYPE_LATEST
 
+import topology
 from config import (
     TICK_INTERVAL_SECONDS,
     TICK_MODE,
-    SERVICE,
+    VALID_KINDS,
     TriggerRequest,
     TriggerResponse,
     ResolveResponse,
     HealthResponse,
+    ActiveIncidentState,
     StateResponse,
+    EndpointInfo,
+    ServiceInfo,
+    ServicesResponse,
     ErrorResponse,
+    service_supports,
 )
 
 from incident_scenarios import IncidentEngine
-from metrics_exporter import REGISTRY, update_all
-from log_generator import LogGenerator
+from metrics_exporter import REGISTRY
+from traffic import TrafficGenerator
 
 logger = logging.getLogger(__name__)
 
@@ -98,12 +108,12 @@ logging.setLogRecordFactory(_record_factory)
 
 app = FastAPI(
     title="Incident Generator",
-    description="Tick-driven incident simulator for the IncidentPilot AI copilot.",
-    version="3.0.0",
+    description="Tick-driven multi-service incident simulator for the IncidentPilot AI copilot.",
+    version="4.0.0",
 )
 
 engine = IncidentEngine()
-log_generator = LogGenerator()
+traffic = TrafficGenerator(engine)
 
 # ---------------------------------------------------------------------------
 # Middleware — generate a request ID for every API call
@@ -136,20 +146,16 @@ async def _assign_request_id(request: Request, call_next):
 
 
 def _tick_loop() -> None:
-    """Background thread: advances the scenario state every TICK_INTERVAL_SECONDS."""
+    """Background thread: advances every active incident, then runs one
+    tick's worth of simulated user traffic through the topology."""
     while True:
         try:
             engine.tick()
-            state = engine.get_state()
-            if state:
-                logger.debug("Tick: kind=%s phase=%s tick=%d latency=%.0f err=%.2f%% conns=%d",
-                              state.kind, state.phase, state.tick_count,
-                              state.p99_latency_ms, state.error_rate_pct,
-                              state.active_connections)
-                update_all(state)
-                log_generator.emit_logs(state)
-            else:
-                logger.debug("Tick: no active incident")
+            active = engine.get_state()
+            if active:
+                logger.debug("Tick: %d active incident(s): %s",
+                              len(active), [(i["kind"], i["service"], i["phase"]) for i in active])
+            traffic.tick()
         except Exception as exc:
             logger.error("Tick loop error: %s", exc, exc_info=True)
         time.sleep(TICK_INTERVAL_SECONDS)
@@ -159,8 +165,8 @@ _thread = threading.Thread(target=_tick_loop, daemon=True, name="tick-loop")
 _thread.start()
 
 logger.info(
-    "FastAPI generator started: TICK_MODE=%s, interval=%ds, service=%s",
-    TICK_MODE, TICK_INTERVAL_SECONDS, SERVICE,
+    "FastAPI generator started: TICK_MODE=%s, interval=%ds, services=%s",
+    TICK_MODE, TICK_INTERVAL_SECONDS, topology.all_service_names(),
 )
 
 # ---------------------------------------------------------------------------
@@ -183,11 +189,11 @@ def _json_resp(model_instance, status=200):
 @app.get("/health")
 def health():
     """Health check — returns a Pydantic HealthResponse."""
-    state = engine.get_state_dict()
-    active = state.get("kind") if state.get("kind") != "none" else None
-    logger.debug("GET /health — active_incident=%s", active)
+    active = engine.get_state()
+    active_labels = [f"{i['kind']}@{i['service']}" for i in active]
+    logger.debug("GET /health — active_incidents=%s", active_labels)
     return _json_resp(
-        HealthResponse(service="flask-generator", active_incident=active)
+        HealthResponse(service="incident-generator", active_incidents=active_labels)
     )
 
 
@@ -200,86 +206,94 @@ def metrics():
     )
 
 
+@app.get("/api/services")
+def services():
+    """Return the topology catalog + canonical user journey."""
+    rid = _get_rid()
+    infos = [
+        ServiceInfo(
+            name=svc.name,
+            user_facing=svc.user_facing,
+            uses_db_pool=svc.uses_db_pool,
+            uses_cache=svc.uses_cache,
+            endpoints=[
+                EndpointInfo(method=ep.method, path=ep.path, calls=[list(c) for c in ep.calls])
+                for ep in svc.endpoints.values()
+            ],
+        )
+        for svc in topology.SERVICES.values()
+    ]
+    return _json_resp(
+        ServicesResponse(
+            services=[i.model_dump() for i in infos],
+            journey=[list(step) for step in topology.JOURNEY],
+        )
+    )
+
+
 @app.post("/api/incidents/{kind}/trigger")
 def trigger_incident(kind: str, body: Optional[TriggerRequest] = None):
-    """Start a scenario of the given kind.
+    """Start a scenario of the given kind, optionally targeting a specific service.
 
     FastAPI validates the optional JSON body using the Pydantic ``TriggerRequest`` model.
     """
     rid = _get_rid()
     req = body or TriggerRequest()
-    logger.info("POST /api/incidents/%s/trigger [req=%s] — auto_resolve=%s",
-                kind, rid, req.auto_resolve)
+    logger.info("POST /api/incidents/%s/trigger [req=%s] — service=%s auto_resolve=%s",
+                kind, rid, req.service or "(default)", req.auto_resolve)
 
-    result = engine.start_scenario(kind, auto_resolve=req.auto_resolve, request_id=rid)
+    result = engine.start_scenario(
+        kind, service=req.service, auto_resolve=req.auto_resolve, request_id=rid,
+    )
     if not result.success:
         logger.warning("Trigger failed for kind=%s [req=%s]: %s", kind, rid, result.error)
         return _json_resp(ErrorResponse(error=result.error or "Unknown error"), 400)
 
-    logger.info("Scenario started [req=%s]: kind=%s auto_resolve=%s",
-                rid, kind, req.auto_resolve)
-    return _json_resp(
-        TriggerResponse(
-            status="started",
-            kind=kind,
-            phase=result.data.get("phase", "unknown") if result.data else "unknown",
-            tick_count=result.data.get("tick_count", 0) if result.data else 0,
-        )
-    )
+    logger.info("Scenario started [req=%s]: kind=%s service=%s auto_resolve=%s",
+                rid, kind, result.data.get("service"), req.auto_resolve)
+    return _json_resp(TriggerResponse(**result.data))
 
 
 @app.post("/api/incidents/{kind}/resolve")
-def resolve_incident(kind: str):
-    """Force-resolve the active scenario (must match kind or use 'current')."""
-    resolve_kind = kind if kind != "current" else None
+def resolve_incident(kind: str, service: Optional[str] = None):
+    """Force-resolve active incident(s). ``kind='current'`` matches any kind;
+    an unset ``service`` query param matches any service."""
+    resolve_kind = None if kind == "current" else kind
     rid = _get_rid()
-    logger.info("POST /api/incidents/%s/resolve [req=%s]", kind, rid)
-    result = engine.resolve(kind=resolve_kind)
+    logger.info("POST /api/incidents/%s/resolve [req=%s] service=%s", kind, rid, service or "(any)")
+    result = engine.resolve(kind=resolve_kind, service=service)
     logger.info("Resolve result [req=%s]: %s", rid, result.data)
-    return _json_resp(
-        ResolveResponse(
-            status=result.data.get("status", "ok") if result.data else "ok",
-            kind=result.data.get("kind") if result.data else None,
-            phase=result.data.get("phase") if result.data else None,
-            expected=result.data.get("expected") if result.data else None,
-            active=result.data.get("active") if result.data else None,
-        )
-    )
+    return _json_resp(ResolveResponse(**result.data))
 
 
 @app.post("/api/incidents/trigger-random")
 def trigger_random():
-    """Start a randomly selected scenario."""
-    import random as _random
-
-    kind = _random.choice(list(engine.VALID_KINDS))
+    """Start a randomly selected scenario on a randomly selected supporting service."""
+    kind = _random.choice(list(VALID_KINDS))
+    candidates = [s for s in topology.all_service_names() if service_supports(kind, s)]
+    service = _random.choice(candidates)
     rid = _get_rid()
-    logger.info("POST /api/incidents/trigger-random [req=%s] — selected kind=%s", rid, kind)
-    result = engine.start_scenario(kind, auto_resolve=True, request_id=rid)
+    logger.info("POST /api/incidents/trigger-random [req=%s] — selected kind=%s service=%s",
+                rid, kind, service)
+    result = engine.start_scenario(kind, service=service, auto_resolve=True, request_id=rid)
     if not result.success:
         logger.warning("Random trigger failed [req=%s]: %s", rid, result.error)
         return _json_resp(ErrorResponse(error=result.error or "Unknown error"), 400)
-    return _json_resp(
-        TriggerResponse(
-            status="started",
-            kind=kind,
-            phase=result.data.get("phase", "unknown") if result.data else "unknown",
-            tick_count=result.data.get("tick_count", 0) if result.data else 0,
-        )
-    )
+    return _json_resp(TriggerResponse(**result.data))
 
 
 @app.get("/api/incidents/state")
 def incident_state():
-    """Return the current incident state as a Pydantic StateResponse."""
+    """Return every currently-active incident."""
     rid = _get_rid()
-    state = engine.get_state()
-    if state:
-        logger.debug("GET /api/incidents/state [req=%s] — kind=%s phase=%s tick=%d",
-                      rid, state.kind, state.phase, state.tick_count)
-        return JSONResponse(content=state.public_dict())
-    logger.debug("GET /api/incidents/state [req=%s] — no active incident", rid)
-    return _json_resp(StateResponse())
+    active = engine.get_state()
+    logger.debug("GET /api/incidents/state [req=%s] — %d active", rid, len(active))
+    return _json_resp(
+        StateResponse(
+            active=[ActiveIncidentState(**a).model_dump() for a in active],
+            count=len(active),
+        )
+    )
 
 
 # ---------------------------------------------------------------------------

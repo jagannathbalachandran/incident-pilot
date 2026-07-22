@@ -1,58 +1,22 @@
 {
-  "title": "Pool Exhaustion",
+  "title": "Payment Cascade (checkout-api -> payment-service)",
   "version": 1,
   "timezone": "utc",
   "editable": true,
   "panels": [
     {
-      "title": "Connections vs Max",
+      "title": "p99 Latency — payment-service (own) vs checkout-api /payment (caller)",
       "type": "timeseries",
       "gridPos": {"h": 8, "w": 12, "x": 0, "y": 0},
       "targets": [
         {
-          "expr": "svc_active_connections{service=\"checkout-api\"}",
-          "legendFormat": "active connections",
+          "expr": "svc_p99_latency_ms{service=\"payment-service\"}",
+          "legendFormat": "payment-service /charge p99 (ms)",
           "refId": "A"
         },
         {
-          "expr": "svc_max_connections{service=\"checkout-api\"}",
-          "legendFormat": "max connections",
-          "refId": "B"
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "unit": "short",
-          "min": 0,
-          "max": 250,
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {"color": "green", "value": null},
-              {"color": "orange", "value": 150},
-              {"color": "red", "value": 190}
-            ]
-          }
-        }
-      },
-      "options": {
-        "legend": {"show": true, "placement": "bottom"},
-        "tooltip": {"mode": "multi"}
-      }
-    },
-    {
-      "title": "p99 Latency & Pool Timeout Errors",
-      "type": "timeseries",
-      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 0},
-      "targets": [
-        {
-          "expr": "svc_p99_latency_ms{service=\"checkout-api\"}",
-          "legendFormat": "{{endpoint}} p99 (ms)",
-          "refId": "A"
-        },
-        {
-          "expr": "sum(rate(svc_errors_total{service=\"checkout-api\", error_type=\"pool_timeout\"}[1m])) or sum(irate(svc_errors_total{service=\"checkout-api\", error_type=\"pool_timeout\"}[30s]))",
-          "legendFormat": "pool timeouts / sec",
+          "expr": "svc_p99_latency_ms{service=\"checkout-api\", endpoint=\"/payment\"}",
+          "legendFormat": "checkout-api /payment p99 (ms)",
           "refId": "B"
         }
       ],
@@ -64,8 +28,8 @@
             "mode": "absolute",
             "steps": [
               {"color": "green", "value": null},
-              {"color": "orange", "value": 1000},
-              {"color": "red", "value": 1500}
+              {"color": "orange", "value": 400},
+              {"color": "red", "value": 700}
             ]
           }
         }
@@ -76,14 +40,40 @@
       }
     },
     {
-      "title": "Error Rate",
+      "title": "checkout-api's call latency into payment-service",
+      "type": "timeseries",
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 0},
+      "targets": [
+        {
+          "expr": "svc_upstream_duration_ms_sum{service=\"checkout-api\", upstream=\"payment-service\"} / svc_upstream_duration_ms_count{service=\"checkout-api\", upstream=\"payment-service\"}",
+          "legendFormat": "avg call latency into payment-service (ms)",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms",
+          "min": 0
+        }
+      },
+      "options": {
+        "legend": {"show": true, "placement": "bottom"}
+      }
+    },
+    {
+      "title": "Error Rate — payment-service (own) vs checkout-api /payment (cascade)",
       "type": "timeseries",
       "gridPos": {"h": 8, "w": 12, "x": 0, "y": 8},
       "targets": [
         {
-          "expr": "svc_error_rate_pct{service=\"checkout-api\"}",
-          "legendFormat": "{{endpoint}} error rate (%)",
+          "expr": "svc_error_rate_pct{service=\"payment-service\"}",
+          "legendFormat": "payment-service /charge error rate (%)",
           "refId": "A"
+        },
+        {
+          "expr": "svc_error_rate_pct{service=\"checkout-api\", endpoint=\"/payment\"}",
+          "legendFormat": "checkout-api /payment error rate (%)",
+          "refId": "B"
         }
       ],
       "fieldConfig": {
@@ -99,15 +89,19 @@
             ]
           }
         }
+      },
+      "options": {
+        "legend": {"show": true, "placement": "bottom"},
+        "tooltip": {"mode": "multi"}
       }
     },
     {
-      "title": "Pool Error Logs",
+      "title": "checkout-api upstream_error logs (attributed to payment-service)",
       "type": "logs",
       "gridPos": {"h": 8, "w": 12, "x": 12, "y": 8},
       "targets": [
         {
-          "expr": "{service=\"checkout-api\"} |= \"could not obtain connection\"",
+          "expr": "{service=\"checkout-api\"} |= \"upstream dependency failed: payment-service\"",
           "refId": "A"
         }
       ],

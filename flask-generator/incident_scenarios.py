@@ -1,16 +1,18 @@
 """
 incident_scenarios.py
 
-Tick-driven state machine that simulates three known incident scenarios:
+Tick-driven state machine that simulates incidents targeting any service in
+the topology catalog: Postgres connection-pool exhaustion, Redis cache node
+failover, or an elevated error-rate injection ("fraud"-style outage).
 
-  A) Postgres connection-pool exhaustion  (runbook Known Issue #1)
-  B) Redis cache node failover             (runbook Known Issue #2)
-  C) Fraud-scoring-svc outage
-
-Every call to tick() advances the simulated time by one minute and
-re-computes the metric values for the current phase.
-
-All public methods return Pydantic models for validated, typed responses.
+Multiple incidents can be active concurrently, each targeting its own
+service. Every call to tick() advances simulated time by one minute and
+re-computes each active incident's effect fields (extra latency, injected
+error probability, warn probability). ``health_for(service)`` folds every
+incident currently targeting a service into one ``Health`` snapshot -- this
+is the entire mechanism ``traffic.py`` uses to make a downstream incident
+cascade into its callers' own latency/error numbers, with zero special-cased
+cross-service logic here.
 """
 
 import logging
@@ -21,20 +23,30 @@ from typing import Optional
 from pydantic import BaseModel
 
 from config import (
-    ScenarioState,
+    Incident,
+    Health,
+    ServiceSnapshot,
     TriggerResponse,
     ResolveResponse,
-    ErrorResponse,
+    ResolvedIncident,
     MAX_CONNECTIONS,
     BASELINE_LATENCY_MS,
     BASELINE_ERROR_PCT,
     BASELINE_CONNECTIONS,
+    BASELINE_CACHE_HIT,
     POOL_CLIMBING_MINUTES,
     POOL_PLATEAU_MINUTES,
     POOL_RECOVERY_MINUTES,
     CACHE_FAILOVER_MINUTES,
     CACHE_WARMING_MINUTES,
     FRAUD_ACTIVE_MINUTES,
+    POOL_ERROR_MSG,
+    FRAUD_ERROR_MSG,
+    CACHE_WARN_MESSAGES,
+    LATENCY_SLO_WARN_MSG,
+    VALID_KINDS,
+    DEFAULT_TARGET,
+    service_supports,
     RNG,
 )
 
@@ -53,29 +65,33 @@ class ScenarioResult(BaseModel):
 
 
 class IncidentEngine:
-    """Thread-safe state machine for incident scenarios.
+    """Thread-safe multi-incident state machine.
 
-    Thread safety is provided by a single reentrant lock that guards
-    all reads and writes to ``self._active``.
+    Incidents are keyed by ``(kind, service)`` -- a service can only have
+    one incident of a given kind at a time, but different kinds (or the
+    same kind on different services) run concurrently. Thread safety is
+    provided by a single reentrant lock guarding all reads/writes.
     """
 
-    VALID_KINDS = frozenset({"pool", "cache", "fraud"})
+    VALID_KINDS = VALID_KINDS
 
     def __init__(self):
         self._lock = threading.RLock()
-        self._active: Optional[ScenarioState] = None
+        self._incidents: dict = {}  # (kind, service) -> Incident
         logger.info("IncidentEngine initialised")
 
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
 
-    def start_scenario(self, kind: str, auto_resolve: bool = True,
-                        request_id: str = "") -> ScenarioResult:
-        """Start (or restart) a scenario.
+    def start_scenario(self, kind: str, service: Optional[str] = None,
+                        auto_resolve: bool = True, request_id: str = "") -> ScenarioResult:
+        """Start (or restart) a scenario targeting ``service``.
 
         Args:
             kind: Incident kind (pool | cache | fraud).
+            service: Target service name. Defaults to the kind's usual
+                target (``config.DEFAULT_TARGET``) if omitted.
             auto_resolve: Whether to auto-resolve after the lifecycle completes.
             request_id: Request ID from the triggering API call, for log tracing.
 
@@ -91,224 +107,244 @@ class IncidentEngine:
                 error=f"unknown incident kind '{kind}'. Valid: {sorted(self.VALID_KINDS)}",
             )
 
+        target = service or DEFAULT_TARGET[kind]
+        if not service_supports(kind, target):
+            logger.warning("start_scenario: service '%s' does not support kind '%s'", target, kind)
+            return ScenarioResult(
+                success=False,
+                error=f"service '{target}' does not support incident kind '{kind}'",
+            )
+
         with self._lock:
-            self._active = ScenarioState(
+            key = (kind, target)
+            inc = Incident(
                 kind=kind,
+                service=target,
                 request_id=request_id,
-                phase="climbing" if kind != "fraud" else "active",
+                phase="climbing" if kind == "pool" else ("failover" if kind == "cache" else "active"),
                 phase_progress=0.0,
                 tick_count=0,
                 auto_resolve=auto_resolve,
                 started_at=time.time(),
             )
-            self._compute_metric_values()
-            logger.info("Scenario started [req=%s]: kind=%s phase=%s auto_resolve=%s",
-                         request_id or "-", kind, self._active.phase, auto_resolve)
+            self._incidents[key] = inc
+            self._compute_effects(inc)
+            logger.info("Scenario started [req=%s]: kind=%s service=%s auto_resolve=%s",
+                         request_id or "-", kind, target, auto_resolve)
             return ScenarioResult(
                 data=TriggerResponse(
-                    status="started",
-                    kind=kind,
-                    phase=self._active.phase,
-                    tick_count=0,
+                    status="started", kind=kind, service=target,
+                    phase=inc.phase, tick_count=0,
                 ).model_dump(),
             )
 
-    def resolve(self, kind: Optional[str] = None) -> ScenarioResult:
-        """Force-resolve the active scenario.
+    def resolve(self, kind: Optional[str] = None, service: Optional[str] = None) -> ScenarioResult:
+        """Force-resolve matching active incidents.
 
-        Returns a ScenarioResult. On success, `.data` contains the
-        ResolveResponse dict. On error, `.success` is False and `.error`
-        has the message.
+        ``kind=None`` matches any kind; ``service=None`` matches any service.
+        Passing both None resolves everything currently active.
+
+        Returns a ScenarioResult whose `.data` is a ResolveResponse dict
+        listing every incident that was resolved (empty list if none matched).
         """
         with self._lock:
-            if self._active is None or self._active.phase == "resolved":
-                logger.info("Resolve: no active incident to resolve")
-                return ScenarioResult(
-                    data=ResolveResponse(status="no_active_incident").model_dump(),
-                )
-            if kind and self._active.kind != kind:
-                logger.info("Resolve: kind mismatch (expected=%s, active=%s)",
-                             kind, self._active.kind)
-                return ScenarioResult(
-                    data=ResolveResponse(
-                        status="no_active_incident",
-                        expected=kind,
-                        active=self._active.kind,
-                    ).model_dump(),
-                )
-            resolved_kind = self._active.kind
-            self._active.phase = "resolved"
-            logger.info("Scenario resolved: kind=%s", resolved_kind)
+            resolved = []
+            for key, inc in list(self._incidents.items()):
+                inc_kind, inc_service = key
+                if kind is not None and inc_kind != kind:
+                    continue
+                if service is not None and inc_service != service:
+                    continue
+                resolved.append(ResolvedIncident(kind=inc_kind, service=inc_service))
+                del self._incidents[key]
+
+            if not resolved:
+                logger.info("Resolve: no matching active incident (kind=%s, service=%s)", kind, service)
+                return ScenarioResult(data=ResolveResponse(status="no_active_incident").model_dump())
+
+            logger.info("Resolved %d incident(s): %s", len(resolved),
+                         [(r.kind, r.service) for r in resolved])
             return ScenarioResult(
                 data=ResolveResponse(
                     status="resolved",
-                    kind=resolved_kind,
-                    phase="resolved",
+                    resolved=[r.model_dump() for r in resolved],
                 ).model_dump(),
             )
 
     def tick(self) -> None:
-        """Advance simulation by one tick (one simulated minute).
+        """Advance every active incident by one tick (one simulated minute)."""
+        with self._lock:
+            for key, inc in list(self._incidents.items()):
+                prev_phase = inc.phase
+                inc.tick_count += 1
+                self._advance_phase(inc)
 
-        Should be called periodically from the background thread.
+                if inc.phase == "resolved":
+                    logger.info("Incident resolved: kind=%s service=%s (tick=%d)",
+                                 inc.kind, inc.service, inc.tick_count)
+                    del self._incidents[key]
+                    continue
+
+                self._compute_effects(inc)
+                if inc.phase != prev_phase:
+                    logger.info("Phase transition: %s -> %s (tick=%d, kind=%s, service=%s)",
+                                 prev_phase, inc.phase, inc.tick_count, inc.kind, inc.service)
+
+    def get_state(self) -> list:
+        """Return public state (list of dicts) for every active incident."""
+        with self._lock:
+            return [
+                {
+                    "kind": inc.kind, "service": inc.service, "phase": inc.phase,
+                    "phase_progress": round(inc.phase_progress, 3),
+                    "tick_count": inc.tick_count, "auto_resolve": inc.auto_resolve,
+                    "request_id": inc.request_id,
+                }
+                for inc in self._incidents.values()
+            ]
+
+    def is_active(self, service: Optional[str] = None) -> bool:
+        """Check whether any incident (optionally: on ``service``) is active."""
+        with self._lock:
+            if service is None:
+                return bool(self._incidents)
+            return any(inc.service == service for inc in self._incidents.values())
+
+    # ------------------------------------------------------------------
+    # Cascade mechanism -- the only two accessors traffic.py needs
+    # ------------------------------------------------------------------
+
+    def health_for(self, service: str) -> Health:
+        """Fold every incident currently targeting ``service`` into one Health.
+
+        This is the whole cascade mechanism: when traffic.py walks a call
+        from checkout-api into payment-service, it asks for payment-service's
+        Health and adds/propagates it onto the parent span -- an incident
+        never needs to know who calls into its target service.
         """
         with self._lock:
-            if self._active is None or self._active.phase in ("none", "resolved"):
-                return
+            active = [inc for inc in self._incidents.values() if inc.service == service]
+            if not active:
+                return Health()
+            dominant = max(active, key=lambda i: i.inject_error_pct)
+            return Health(
+                extra_latency_ms=sum(i.extra_latency_ms for i in active),
+                inject_error_pct=max(i.inject_error_pct for i in active),
+                error_type=dominant.error_type,
+                error_message=dominant.error_message,
+                warn_pct=max(i.warn_pct for i in active),
+                warn_message=dominant.warn_message,
+            )
 
-            prev_phase = self._active.phase
-            self._active.tick_count += 1
-            self._advance_phase()
-            self._compute_metric_values()
-
-            if self._active.phase != prev_phase:
-                logger.info("Phase transition: %s → %s (tick=%d, kind=%s)",
-                             prev_phase, self._active.phase,
-                             self._active.tick_count, self._active.kind)
-
-    def get_state(self) -> Optional[ScenarioState]:
-        """Return the current scenario state (or None if no incident active)."""
+    def service_snapshot(self, service: str) -> ServiceSnapshot:
+        """Pool/cache gauge values for a service (baseline if nothing sets them)."""
         with self._lock:
-            if self._active is None or self._active.phase in ("none", "resolved"):
-                return None
-            return self._active
-
-    def get_state_dict(self) -> dict:
-        """Return state as dict, or a 'none' sentinel for the API."""
-        with self._lock:
-            if self._active is None:
-                return {"kind": "none", "phase": "none", "tick_count": 0, "auto_resolve": True}
-            return self._active.public_dict()
-
-    def is_active(self) -> bool:
-        """Check whether a scenario is currently running."""
-        with self._lock:
-            return self._active is not None and self._active.phase not in ("none", "resolved")
+            snap = ServiceSnapshot()
+            for inc in self._incidents.values():
+                if inc.service != service:
+                    continue
+                if inc.pool_active is not None:
+                    snap.pool_active = inc.pool_active
+                if inc.cache_hit is not None:
+                    snap.cache_hit = inc.cache_hit
+            return snap
 
     # ------------------------------------------------------------------
-    # Internal helpers
+    # Internal helpers -- phase advancement + effect math
     # ------------------------------------------------------------------
 
-    def _advance_phase(self) -> None:
+    def _advance_phase(self, inc: Incident) -> None:
         """Determine the current phase from tick_count and duration budgets."""
-        sp = self._active
-        t = sp.tick_count
+        t = inc.tick_count
 
-        if sp.kind == "pool":
+        if inc.kind == "pool":
             climbing_end = POOL_CLIMBING_MINUTES
             plateau_end = climbing_end + POOL_PLATEAU_MINUTES
             recovery_end = plateau_end + POOL_RECOVERY_MINUTES
-
             if t < climbing_end:
-                sp.phase = "climbing"
-                sp.phase_progress = t / climbing_end
+                inc.phase, inc.phase_progress = "climbing", t / climbing_end
             elif t < plateau_end:
-                sp.phase = "plateau"
-                sp.phase_progress = (t - climbing_end) / plateau_end
+                inc.phase, inc.phase_progress = "plateau", (t - climbing_end) / POOL_PLATEAU_MINUTES
             elif t < recovery_end:
-                sp.phase = "recovering"
-                sp.phase_progress = (t - plateau_end) / recovery_end
+                inc.phase, inc.phase_progress = "recovering", (t - plateau_end) / POOL_RECOVERY_MINUTES
             else:
-                sp.phase = "resolved"
+                inc.phase = "resolved"
 
-        elif sp.kind == "cache":
+        elif inc.kind == "cache":
             failover_end = CACHE_FAILOVER_MINUTES
             warming_end = failover_end + CACHE_WARMING_MINUTES
-
             if t < failover_end:
-                sp.phase = "failover"
-                sp.phase_progress = t / failover_end
+                inc.phase, inc.phase_progress = "failover", t / failover_end
             elif t < warming_end:
-                sp.phase = "warming"
-                sp.phase_progress = (t - failover_end) / warming_end
+                inc.phase, inc.phase_progress = "warming", (t - failover_end) / CACHE_WARMING_MINUTES
             else:
-                sp.phase = "resolved"
+                inc.phase = "resolved"
 
-        elif sp.kind == "fraud":
+        elif inc.kind == "fraud":
             if t < FRAUD_ACTIVE_MINUTES:
-                sp.phase = "active"
-                sp.phase_progress = t / FRAUD_ACTIVE_MINUTES
+                inc.phase, inc.phase_progress = "active", t / FRAUD_ACTIVE_MINUTES
             else:
-                sp.phase = "resolved"
+                inc.phase = "resolved"
 
-    def _compute_metric_values(self) -> None:
-        """Re-derive all metric values from the current phase + progress.
+        inc.phase_progress = max(0.0, min(1.0, inc.phase_progress))
 
-        Math matches generate_synthetic_data.py exactly.
-        """
-        sp = self._active
-        if sp.kind == "pool":
-            self._compute_pool_metrics()
-        elif sp.kind == "cache":
-            self._compute_cache_metrics()
-        elif sp.kind == "fraud":
-            self._compute_fraud_metrics()
+    def _compute_effects(self, inc: Incident) -> None:
+        """Re-derive all effect fields from the current phase + progress."""
+        if inc.kind == "pool":
+            self._pool_effects(inc)
+        elif inc.kind == "cache":
+            self._cache_effects(inc)
+        elif inc.kind == "fraud":
+            self._fraud_effects(inc)
 
-    def _compute_pool_metrics(self) -> None:
-        sp = self._active
-        p = sp.phase_progress
-
-        if sp.phase == "climbing":
+    def _pool_effects(self, inc: Incident) -> None:
+        p = inc.phase_progress
+        if inc.phase == "climbing":
             conns = int(BASELINE_CONNECTIONS + p * (MAX_CONNECTIONS - BASELINE_CONNECTIONS))
-            latency = BASELINE_LATENCY_MS + p * 1450 + RNG.gauss(0, 40)
-            err_rate = BASELINE_ERROR_PCT + p * 5.8 + RNG.gauss(0, 0.15)
-        elif sp.phase == "plateau":
+            extra_latency = p * 1450 + RNG.gauss(0, 40)
+            err_pct = BASELINE_ERROR_PCT + p * 5.8 + RNG.gauss(0, 0.15)
+        elif inc.phase == "plateau":
             conns = MAX_CONNECTIONS
-            latency = 1780.0 + RNG.gauss(0, 60)
-            err_rate = max(0.0, 6.1 + RNG.gauss(0, 0.3))
-        elif sp.phase == "recovering":
+            extra_latency = 1400.0 + RNG.gauss(0, 60)
+            err_pct = 6.1 + RNG.gauss(0, 0.3)
+        elif inc.phase == "recovering":
             conns = int(MAX_CONNECTIONS - p * (MAX_CONNECTIONS - BASELINE_CONNECTIONS))
-            latency = 1780.0 - p * 1400 + RNG.gauss(0, 30)
-            err_rate = max(0.0, 6.1 - p * 6.0 + RNG.gauss(0, 0.1))
-        else:
-            return  # resolved or unknown
-
-        sp.active_connections = max(0, conns)
-        sp.p99_latency_ms = max(0.0, round(latency, 1))
-        sp.error_rate_pct = round(max(0.0, err_rate), 3)
-        sp.cache_hit_ratio = round(0.95 + RNG.gauss(0, 0.01), 3)
-        sp.pool_error_pct = 0.0
-
-        # Pool errors appear only when connections are near exhaustion
-        if sp.active_connections >= 190 and sp.phase in ("climbing", "plateau"):
-            excess = (sp.active_connections - 190) / (MAX_CONNECTIONS - 190)
-            sp.pool_error_pct = round(RNG.uniform(4.0, 6.0) * excess, 3)
-
-    def _compute_cache_metrics(self) -> None:
-        sp = self._active
-        p = sp.phase_progress
-        FLOOR_RATIO = 0.41
-
-        if sp.phase == "failover":
-            hit = FLOOR_RATIO
-            cache_warn = 4.0  # always warning during failover
-        elif sp.phase == "warming":
-            hit = FLOOR_RATIO + p * (0.93 - FLOOR_RATIO)
-            cache_warn = 4.0 if hit < 0.90 else 0.0
+            extra_latency = 1400.0 - p * 1400 + RNG.gauss(0, 30)
+            err_pct = 6.1 - p * 6.0 + RNG.gauss(0, 0.1)
         else:
             return
 
-        sp.cache_hit_ratio = round(hit, 3)
-        sp.cache_warn_pct = cache_warn
-        sp.active_connections = BASELINE_CONNECTIONS + RNG.randint(-5, 5)
-        sp.error_rate_pct = round(max(0.0, BASELINE_ERROR_PCT + RNG.gauss(0, 0.02)), 3)
-        sp.pool_error_pct = 0.0
-        sp.fraud_error_pct = 0.0
+        inc.pool_active = max(0, conns)
+        inc.extra_latency_ms = max(0.0, round(extra_latency, 1))
+        inc.inject_error_pct = round(max(0.0, err_pct) / 100.0, 5)
+        inc.error_type = "pool_timeout"
+        inc.error_message = POOL_ERROR_MSG
+        inc.warn_pct = 30.0 if (BASELINE_LATENCY_MS + inc.extra_latency_ms) > 1500 else 0.0
+        inc.warn_message = LATENCY_SLO_WARN_MSG
 
-        # Latency scales with severity of cache miss
-        severity = (0.95 - hit) / (0.95 - FLOOR_RATIO)
-        success_median = 240.0 * (1.0 + severity * 2.9)
-        sp.p99_latency_ms = round(max(0.0, success_median + RNG.gauss(0, 40)), 1)
-
-    def _compute_fraud_metrics(self) -> None:
-        sp = self._active
-
-        if sp.phase == "active":
-            sp.error_rate_pct = round(RNG.uniform(10.0, 15.0), 3)
-            sp.p99_latency_ms = round(BASELINE_LATENCY_MS * 2.2 + RNG.gauss(0, 30), 1)
-            sp.active_connections = BASELINE_CONNECTIONS + RNG.randint(-5, 5)
-            sp.cache_hit_ratio = round(0.95 + RNG.gauss(0, 0.01), 3)
-            sp.pool_error_pct = 0.0
-            sp.fraud_error_pct = RNG.uniform(10.0, 15.0)  # same as error_rate
+    def _cache_effects(self, inc: Incident) -> None:
+        p = inc.phase_progress
+        FLOOR_RATIO = 0.41
+        if inc.phase == "failover":
+            hit = FLOOR_RATIO
+            warn_pct = 4.0
+        elif inc.phase == "warming":
+            hit = FLOOR_RATIO + p * (0.93 - FLOOR_RATIO)
+            warn_pct = 4.0 if hit < 0.90 else 0.0
         else:
-            sp.fraud_error_pct = 0.0
+            return
+
+        inc.cache_hit = round(hit, 3)
+        severity = (BASELINE_CACHE_HIT - hit) / (BASELINE_CACHE_HIT - FLOOR_RATIO)
+        success_latency = 240.0 * (1.0 + severity * 2.9)
+        inc.extra_latency_ms = max(0.0, round(success_latency - BASELINE_LATENCY_MS + RNG.gauss(0, 40), 1))
+        inc.inject_error_pct = round(max(0.0, BASELINE_ERROR_PCT + RNG.gauss(0, 0.02)) / 100.0, 5)
+        inc.warn_pct = warn_pct
+        inc.warn_message = RNG.choice(CACHE_WARN_MESSAGES) if warn_pct > 0 else ""
+
+    def _fraud_effects(self, inc: Incident) -> None:
+        if inc.phase == "active":
+            inc.inject_error_pct = round(RNG.uniform(10.0, 15.0) / 100.0, 5)
+            inc.extra_latency_ms = max(0.0, round(BASELINE_LATENCY_MS * 1.2 + RNG.gauss(0, 30), 1))
+            inc.error_type = "fraud_svc_unavailable"
+            inc.error_message = FRAUD_ERROR_MSG

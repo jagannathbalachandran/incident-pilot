@@ -51,7 +51,7 @@
                   "pm.test(\"Status 200\", () => pm.response.to.have.status(200));",
                   "pm.test(\"Body has service field\", () => {",
                   "    const json = pm.response.json();",
-                  "    pm.expect(json).to.have.property('service', 'flask-generator');",
+                  "    pm.expect(json).to.have.property('service', 'incident-generator');",
                   "    pm.expect(json).to.have.property('status', 'ok');",
                   "    pm.expect(json).to.have.property('request_id');",
                   "    pm.expect(json.request_id).to.match(/^[a-f0-9]{12}$/);",
@@ -78,14 +78,14 @@
                   "value": "a1b2c3d4e5f6"
                 }
               ],
-              "body": "{\n  \"status\": \"ok\",\n  \"service\": \"flask-generator\",\n  \"active_incident\": null,\n  \"request_id\": \"a1b2c3d4e5f6\"\n}"
+              "body": "{\n  \"status\": \"ok\",\n  \"service\": \"incident-generator\",\n  \"active_incidents\": [],\n  \"request_id\": \"a1b2c3d4e5f6\"\n}"
             },
             {
               "name": "Pool incident active",
               "status": "OK",
               "code": 200,
               "header": [],
-              "body": "{\n  \"status\": \"ok\",\n  \"service\": \"flask-generator\",\n  \"active_incident\": \"pool\",\n  \"request_id\": \"a1b2c3d4e5f6\"\n}"
+              "body": "{\n  \"status\": \"ok\",\n  \"service\": \"incident-generator\",\n  \"active_incidents\": [\"pool@checkout-api\"],\n  \"request_id\": \"a1b2c3d4e5f6\"\n}"
             }
           ]
         },
@@ -557,7 +557,7 @@
             "url": {
               "raw": "{{api_url}}/api/incidents/state"
             },
-            "description": "Get the current incident state with metrics snapshot."
+            "description": "Get every currently-active incident (one process can be simulating incidents on several services at once)."
           },
           "event": [
             {
@@ -567,17 +567,19 @@
                 "exec": [
                   "pm.test(\"Status 200\", () => pm.response.to.have.status(200));",
                   "const json = pm.response.json();",
-                  "if (json.kind !== 'none') {",
+                  "pm.test(\"Body has active[] and count\", () => {",
+                  "    pm.expect(json).to.have.property('active');",
+                  "    pm.expect(json).to.have.property('count');",
+                  "    pm.expect(json.active.length).to.equal(json.count);",
+                  "});",
+                  "json.active.forEach((incident) => {",
                   "    pm.test(\"Active incident has required fields\", () => {",
-                  "        pm.expect(json).to.have.property('kind');",
-                  "        pm.expect(json).to.have.property('phase');",
-                  "        pm.expect(json).to.have.property('tick_count');",
-                  "        pm.expect(json).to.have.property('p99_latency_ms');",
-                  "        pm.expect(json).to.have.property('error_rate_pct');",
-                  "        pm.expect(json).to.have.property('active_connections');",
-                  "        pm.expect(json).to.have.property('request_id');",
+                  "        pm.expect(incident).to.have.property('kind');",
+                  "        pm.expect(incident).to.have.property('service');",
+                  "        pm.expect(incident).to.have.property('phase');",
+                  "        pm.expect(incident).to.have.property('tick_count');",
                   "    });",
-                  "}"
+                  "});"
                 ]
               }
             }
@@ -593,14 +595,14 @@
                   "value": "a1b2c3d4e5f6"
                 }
               ],
-              "body": "{\n  \"kind\": \"pool\",\n  \"phase\": \"climbing\",\n  \"phase_progress\": 0.4,\n  \"tick_count\": 6,\n  \"p99_latency_ms\": 984.6,\n  \"error_rate_pct\": 2.31,\n  \"active_connections\": 150,\n  \"cache_hit_ratio\": 0.952,\n  \"auto_resolve\": true,\n  \"request_id\": \"a1b2c3d4e5f6\"\n}"
+              "body": "{\n  \"active\": [\n    {\n      \"kind\": \"pool\",\n      \"service\": \"checkout-api\",\n      \"phase\": \"climbing\",\n      \"phase_progress\": 0.4,\n      \"tick_count\": 6,\n      \"auto_resolve\": true,\n      \"request_id\": \"a1b2c3d4e5f6\"\n    }\n  ],\n  \"count\": 1,\n  \"request_id\": \"a1b2c3d4e5f6\"\n}"
             },
             {
-              "name": "Baseline (no incident)",
+              "name": "Baseline (no incidents)",
               "status": "OK",
               "code": 200,
               "header": [],
-              "body": "{\n  \"kind\": \"none\",\n  \"phase\": \"none\",\n  \"phase_progress\": 0.0,\n  \"tick_count\": 0,\n  \"p99_latency_ms\": 380.0,\n  \"error_rate_pct\": 0.05,\n  \"active_connections\": 118,\n  \"cache_hit_ratio\": 0.95,\n  \"auto_resolve\": true,\n  \"request_id\": \"a1b2c3d4e5f6\"\n}"
+              "body": "{\n  \"active\": [],\n  \"count\": 0,\n  \"request_id\": \"a1b2c3d4e5f6\"\n}"
             }
           ]
         },
@@ -626,11 +628,11 @@
                   "});",
                   "pm.test(\"Body contains checkout metrics\", () => {",
                   "    const body = pm.response.text();",
-                  "    pm.expect(body).to.include('checkout_p99_latency_ms');",
-                  "    pm.expect(body).to.include('checkout_error_rate_pct');",
-                  "    pm.expect(body).to.include('checkout_active_connections');",
-                  "    pm.expect(body).to.include('checkout_max_connections');",
-                  "    pm.expect(body).to.include('checkout_cache_hit_ratio');",
+                  "    pm.expect(body).to.include('svc_p99_latency_ms');",
+                  "    pm.expect(body).to.include('svc_error_rate_pct');",
+                  "    pm.expect(body).to.include('svc_active_connections');",
+                  "    pm.expect(body).to.include('svc_max_connections');",
+                  "    pm.expect(body).to.include('svc_cache_hit_ratio');",
                   "});",
                   "pm.test(\"Response does NOT have X-Request-ID (plain text)\", () => {",
                   "    pm.expect(pm.response.headers.get('X-Request-ID')).to.be.null;",
@@ -683,7 +685,7 @@
                   "    const json = pm.response.json();",
                   "    pm.expect(json).to.have.property('openapi');",
                   "    pm.expect(json.info).to.have.property('title', 'Incident Generator');",
-                  "    pm.expect(json.info).to.have.property('version', '3.0.0');",
+                  "    pm.expect(json.info).to.have.property('version', '4.0.0');",
                   "    pm.expect(json).to.have.property('paths');",
                   "    const paths = Object.keys(json.paths);",
                   "    pm.expect(paths).to.include('/health');",
@@ -710,7 +712,7 @@
             "method": "GET",
             "header": [],
             "url": {
-              "raw": "{{prometheus_url}}/api/v1/query_range?query={__name__%3D~%22checkout_.*%22,service%3D%22checkout-api%22}&start={{start_ts}}&end={{end_ts}}&step=60"
+              "raw": "{{prometheus_url}}/api/v1/query_range?query={__name__%3D~%22svc_.*%22,service%3D%22checkout-api%22}&start={{start_ts}}&end={{end_ts}}&step=60"
             },
             "description": "Query all checkout-api metrics using a PromQL label matcher regex. More efficient than or-chaining."
           },
@@ -737,7 +739,7 @@
               "status": "OK",
               "code": 200,
               "header": [],
-              "body": "{\n  \"status\": \"success\",\n  \"data\": {\n    \"resultType\": \"matrix\",\n    \"result\": [{\n      \"metric\": {\"__name__\": \"checkout_p99_latency_ms\", \"service\": \"checkout-api\"},\n      \"values\": [[1700000000, \"380.5\"], [1700000060, \"1486.2\"]]\n    }]\n  }\n}"
+              "body": "{\n  \"status\": \"success\",\n  \"data\": {\n    \"resultType\": \"matrix\",\n    \"result\": [{\n      \"metric\": {\"__name__\": \"svc_p99_latency_ms\", \"service\": \"checkout-api\"},\n      \"values\": [[1700000000, \"380.5\"], [1700000060, \"1486.2\"]]\n    }]\n  }\n}"
             }
           ]
         },
@@ -747,7 +749,7 @@
             "method": "GET",
             "header": [],
             "url": {
-              "raw": "{{prometheus_url}}/api/v1/query?query=checkout_p99_latency_ms{service%3D\"checkout-api\"}"
+              "raw": "{{prometheus_url}}/api/v1/query?query=svc_p99_latency_ms{service%3D\"checkout-api\"}"
             },
             "description": "Get the current (instant) value of a single metric. Useful for quick checks."
           },
@@ -757,7 +759,7 @@
               "status": "OK",
               "code": 200,
               "header": [],
-              "body": "{\n  \"status\": \"success\",\n  \"data\": {\n    \"resultType\": \"vector\",\n    \"result\": [{\n      \"metric\": {\"__name__\": \"checkout_p99_latency_ms\", \"service\": \"checkout-api\"},\n      \"value\": [1700000000, \"1486.2\"]\n    }]\n  }\n}"
+              "body": "{\n  \"status\": \"success\",\n  \"data\": {\n    \"resultType\": \"vector\",\n    \"result\": [{\n      \"metric\": {\"__name__\": \"svc_p99_latency_ms\", \"service\": \"checkout-api\"},\n      \"value\": [1700000000, \"1486.2\"]\n    }]\n  }\n}"
             }
           ]
         },
@@ -810,7 +812,7 @@
               "status": "OK",
               "code": 200,
               "header": [],
-              "body": "{\n  \"status\": \"success\",\n  \"data\": {\n    \"resultType\": \"streams\",\n    \"result\": [{\n      \"stream\": {\"service\": \"checkout-api\", \"source\": \"flask-generator\"},\n      \"values\": [\n        [\"1700000000000000000\", \"{\\\"timestamp\\\":\\\"2026-07-16T12:00:00Z\\\",\\\"level\\\":\\\"ERROR\\\",\\\"message\\\":\\\"could not obtain connection from pool within 5000ms\\\"}\"],\n        [\"1700000060000000000\", \"{\\\"timestamp\\\":\\\"2026-07-16T12:00:06Z\\\",\\\"level\\\":\\\"WARN\\\",\\\"message\\\":\\\"request exceeded p99 SLO threshold (1500ms)\\\"}\"]\n      ]\n    }]\n  }\n}"
+              "body": "{\n  \"status\": \"success\",\n  \"data\": {\n    \"resultType\": \"streams\",\n    \"result\": [{\n      \"stream\": {\"service\": \"checkout-api\", \"source\": \"incident-generator\"},\n      \"values\": [\n        [\"1700000000000000000\", \"{\\\"timestamp\\\":\\\"2026-07-16T12:00:00Z\\\",\\\"level\\\":\\\"ERROR\\\",\\\"message\\\":\\\"could not obtain connection from pool within 5000ms\\\"}\"],\n        [\"1700000060000000000\", \"{\\\"timestamp\\\":\\\"2026-07-16T12:00:06Z\\\",\\\"level\\\":\\\"WARN\\\",\\\"message\\\":\\\"request exceeded p99 SLO threshold (1500ms)\\\"}\"]\n      ]\n    }]\n  }\n}"
             }
           ]
         },

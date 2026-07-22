@@ -20,7 +20,9 @@ RUN uv sync --no-dev
 
 # Copy application code
 COPY config.py .
+COPY topology.py .
 COPY incident_scenarios.py .
+COPY traffic.py .
 COPY metrics_exporter.py .
 COPY log_generator.py .
 COPY app.py .

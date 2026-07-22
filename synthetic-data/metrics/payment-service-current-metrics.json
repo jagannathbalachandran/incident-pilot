@@ -1,0 +1,15 @@
+{
+  "service": "payment-service",
+  "incident_status": "none",
+  "related_postmortem": "2026-07-payment-service-cascade",
+  "series": [
+    {"timestamp": "2026-07-22T09:40:00Z", "service": "payment-service", "p99_latency_ms": 158.3, "error_rate_pct": 0.07, "active_connections": 34, "max_connections": 80, "cache_hit_ratio": 0.0},
+    {"timestamp": "2026-07-22T09:41:00Z", "service": "payment-service", "p99_latency_ms": 162.9, "error_rate_pct": 0.06, "active_connections": 37, "max_connections": 80, "cache_hit_ratio": 0.0},
+    {"timestamp": "2026-07-22T09:42:00Z", "service": "payment-service", "p99_latency_ms": 151.4, "error_rate_pct": 0.08, "active_connections": 31, "max_connections": 80, "cache_hit_ratio": 0.0},
+    {"timestamp": "2026-07-22T09:43:00Z", "service": "payment-service", "p99_latency_ms": 155.7, "error_rate_pct": 0.06, "active_connections": 35, "max_connections": 80, "cache_hit_ratio": 0.0},
+    {"timestamp": "2026-07-22T09:44:00Z", "service": "payment-service", "p99_latency_ms": 160.2, "error_rate_pct": 0.07, "active_connections": 38, "max_connections": 80, "cache_hit_ratio": 0.0},
+    {"timestamp": "2026-07-22T09:45:00Z", "service": "payment-service", "p99_latency_ms": 153.8, "error_rate_pct": 0.06, "active_connections": 33, "max_connections": 80, "cache_hit_ratio": 0.0},
+    {"timestamp": "2026-07-22T09:46:00Z", "service": "payment-service", "p99_latency_ms": 157.1, "error_rate_pct": 0.07, "active_connections": 36, "max_connections": 80, "cache_hit_ratio": 0.0},
+    {"timestamp": "2026-07-22T09:47:00Z", "service": "payment-service", "p99_latency_ms": 159.5, "error_rate_pct": 0.06, "active_connections": 34, "max_connections": 80, "cache_hit_ratio": 0.0}
+  ]
+}

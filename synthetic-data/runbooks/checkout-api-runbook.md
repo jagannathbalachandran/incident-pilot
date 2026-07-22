@@ -27,7 +27,7 @@ different investigations, not the same checklist.
 
 3. **Check downstream dependency latency.**
    Panel: `checkout-api > Downstream Latency (by dependency)`
-   checkout-api calls `payment-gateway-svc`, `inventory-svc`, and
+   checkout-api calls `payment-service`, `inventory-svc`, and
    `fraud-scoring-svc` synchronously — a slow call to any of these shows up
    in checkout-api's own latency even though checkout-api itself is healthy.
    - If a dependency's p99 spiked at the same time as checkout-api's → this

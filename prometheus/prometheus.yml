@@ -30,8 +30,13 @@ scrape_configs:
 
     # Service discovery: Docker Compose service name resolves via the
     # internal Docker DNS on the 'monitoring' network.
+    #
+    # No target-level `service` label here: the generator now simulates
+    # multiple services (auth-service, listing-service, checkout-api,
+    # payment-service, ...) and sets its own `service` label per metric
+    # sample. A target-level label of the same name would cause Prometheus
+    # to rename it to `exported_service` on collision, silently breaking
+    # every downstream `service="..."` query.
     static_configs:
       - targets:
           - "flask-generator:5000"
-        labels:
-          service: "checkout-api"

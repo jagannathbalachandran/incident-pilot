@@ -5,8 +5,15 @@ Tool for querying live metrics and logs from Prometheus and Loki,
 with automatic fallback to static JSON/JSONL files when the live
 stack is not running.
 
-Used by IncidentPilot.query() to include live incident data in
-the triage context.
+The generator now simulates several services (auth-service,
+listing-service, checkout-api, payment-service, ...); passing
+``service=None`` (the default) queries across all of them, which is
+what's needed to reconstruct one whole user journey (login -> ... ->
+logout) since its spans land in more than one service's log stream.
+Pass an explicit service name to scope a query to one service instead.
+
+Used by IncidentPilot.query() to include live incident data (and, when
+relevant, a reconstructed distributed trace) in the triage context.
 
 Environment variables:
     PROMETHEUS_URL  — default http://localhost:9090
@@ -17,7 +24,7 @@ import json
 import logging
 import os
 import re
-from collections import Counter
+from collections import Counter, defaultdict
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
@@ -34,7 +41,26 @@ PROMETHEUS_URL = os.getenv("PROMETHEUS_URL", "http://localhost:9090")
 LOKI_URL = os.getenv("LOKI_URL", "http://localhost:3100")
 
 DATA_DIR = Path(__file__).parent.parent / "synthetic-data"
-DEFAULT_SERVICE = "checkout-api"
+
+# Every service the generator simulates -- used only to fan the static
+# fallback loaders out across per-service files when no single service is
+# requested. Kept as a local, display/fallback-only list rather than an
+# import from flask-generator/topology.py, since this module never depends
+# on the generator's internals (it only talks to Prometheus/Loki over HTTP).
+ALL_SERVICES = ("auth-service", "listing-service", "checkout-api", "payment-service")
+
+# Canonical journey order (login -> ... -> logout), used only to order a
+# reconstructed trace's top-level steps for display -- mirrors
+# flask-generator/topology.py's JOURNEY.
+JOURNEY_ORDER = (
+    ("auth-service", "/login"),
+    ("listing-service", "/listings"),
+    ("checkout-api", "/checkout"),
+    ("checkout-api", "/payment"),
+    ("auth-service", "/logout"),
+)
+
+DEFAULT_SERVICE: Optional[str] = None  # None == query across all services
 
 # ---------------------------------------------------------------------------
 # Timeframe helpers
@@ -97,20 +123,25 @@ def _parse_iso(s: str) -> Optional[datetime]:
 
 
 def query_prometheus(
-    service: str = DEFAULT_SERVICE,
+    service: Optional[str] = DEFAULT_SERVICE,
     timeframe: str = "15m",
 ) -> Optional[list[dict]]:
     """Query Prometheus for metric time-series data via the HTTP API.
+
+    ``service=None`` queries every ``svc_*`` metric across all services;
+    passing a service name scopes the query to that service's label.
 
     Returns a list of Prometheus result series (each with ``metric`` and
     ``values`` keys), or **None** if the live endpoint is unreachable.
     """
     start, end = parse_timeframe(timeframe)
 
-    # Fetch all checkout-api gauge metrics using a label matcher regex.
     # ``or``-chaining would only return the leftmost metric with data;
-    # ``__name__=~"checkout_.*"`` matches all ``checkout_*`` metrics instead.
-    promql = f'{{__name__=~"checkout_.*",service="{service}"}}'
+    # ``__name__=~"svc_.*"`` matches every service metric family instead.
+    if service and service != "all":
+        promql = f'{{__name__=~"svc_.*",service="{service}"}}'
+    else:
+        promql = '{__name__=~"svc_.*"}'
 
     params = {
         "query": promql,
@@ -149,22 +180,34 @@ def query_prometheus(
 
 
 def _load_metrics_fallback(
-    service: str = DEFAULT_SERVICE,
+    service: Optional[str] = DEFAULT_SERVICE,
 ) -> Optional[list[dict]]:
     """Read metric values from the static JSON files.
 
-    Returns a list of Prometheus-style series dicts.
+    ``service=None`` merges every service's fallback file into one series
+    list. Returns a list of Prometheus-style series dicts.
     """
     metrics_dir = DATA_DIR / "metrics"
     if not metrics_dir.is_dir():
         logger.debug("Metrics fallback dir %s not found", metrics_dir)
         return None
 
-    # Try current file first, then the resolved past incident
+    targets = ALL_SERVICES if not service or service == "all" else (service,)
+    combined: list[dict] = []
+    for svc in targets:
+        combined.extend(_load_one_service_metrics_fallback(svc))
+
+    if not combined:
+        return None
+    logger.info("Loaded metrics fallback for %d service(s)", len(targets))
+    return combined
+
+
+def _load_one_service_metrics_fallback(service: str) -> list[dict]:
+    metrics_dir = DATA_DIR / "metrics"
     for filename in (f"{service}-current-metrics.json", f"{service}-2026-05-14-metrics.json"):
         path = metrics_dir / filename
         if not path.exists():
-            logger.debug("Metrics fallback file %s not found", filename)
             continue
         try:
             with open(path) as f:
@@ -175,31 +218,25 @@ def _load_metrics_fallback(
 
         series = data.get("series", [])
         if not series:
-            logger.debug("Metrics fallback %s has no series data", filename)
             continue
-
-        logger.info("Loaded metrics fallback from %s (%d series points)",
-                     filename, len(series))
 
         # Only the last (most recent) point is needed — _format_live_data only
         # reads the latest value from each series.
         last_point = series[-1]
         ts = last_point.get("timestamp", "")
-        cleaned = [
-            {"metric": {"__name__": "checkout_p99_latency_ms", "service": service},
+        return [
+            {"metric": {"__name__": "svc_p99_latency_ms", "service": service},
              "values": [[ts, str(last_point.get("p99_latency_ms", "0"))]]},
-            {"metric": {"__name__": "checkout_error_rate_pct", "service": service},
+            {"metric": {"__name__": "svc_error_rate_pct", "service": service},
              "values": [[ts, str(last_point.get("error_rate_pct", "0"))]]},
-            {"metric": {"__name__": "checkout_active_connections", "service": service},
+            {"metric": {"__name__": "svc_active_connections", "service": service},
              "values": [[ts, str(last_point.get("active_connections", "0"))]]},
-            {"metric": {"__name__": "checkout_cache_hit_ratio", "service": service},
+            {"metric": {"__name__": "svc_cache_hit_ratio", "service": service},
              "values": [[ts, str(last_point.get("cache_hit_ratio", "0"))]]},
-            {"metric": {"__name__": "checkout_max_connections", "service": service},
+            {"metric": {"__name__": "svc_max_connections", "service": service},
              "values": [[ts, str(last_point.get("max_connections", "0"))]]},
         ]
-        return cleaned
-
-    return None
+    return []
 
 
 # ---------------------------------------------------------------------------
@@ -208,23 +245,30 @@ def _load_metrics_fallback(
 
 
 def query_loki(
-    service: str = DEFAULT_SERVICE,
+    service: Optional[str] = DEFAULT_SERVICE,
     timeframe: str = "15m",
 ) -> Optional[list[dict]]:
-    """Query Loki for log lines matching the given service label.
+    """Query Loki for log lines.
+
+    ``service=None`` matches every service stream (via the static
+    ``source="incident-generator"`` label every stream carries); passing a
+    service name scopes the query to that service's stream label.
 
     Returns a flat list of log entry dicts, or **None** if the live
     endpoint is unreachable.
     """
     start, end = parse_timeframe(timeframe)
 
-    logql = f'{{service="{service}"}}'
+    if service and service != "all":
+        logql = f'{{service="{service}"}}'
+    else:
+        logql = '{source="incident-generator"}'
 
     params = {
         "query": logql,
         "start": str(int(start.timestamp())),
         "end": str(int(end.timestamp())),
-        "limit": "100",
+        "limit": "500",
     }
 
     logger.debug("query_loki: GET %s/loki/api/v1/query_range (start=%s end=%s)",
@@ -262,21 +306,35 @@ def query_loki(
 
 
 def _load_logs_fallback(
-    service: str = DEFAULT_SERVICE,
+    service: Optional[str] = DEFAULT_SERVICE,
 ) -> Optional[list[dict]]:
     """Read log lines from the static JSONL files.
 
-    Returns a list of log entry dicts.
+    ``service=None`` merges every service's fallback file. Returns a list
+    of log entry dicts.
     """
     logs_dir = DATA_DIR / "logs"
     if not logs_dir.is_dir():
         logger.debug("Logs fallback dir %s not found", logs_dir)
         return None
 
+    targets = ALL_SERVICES if not service or service == "all" else (service,)
+    combined: list[dict] = []
+    for svc in targets:
+        combined.extend(_load_one_service_logs_fallback(svc))
+
+    if not combined:
+        return None
+    logger.info("Loaded logs fallback for %d service(s), %d lines total",
+                 len(targets), len(combined))
+    return combined
+
+
+def _load_one_service_logs_fallback(service: str) -> list[dict]:
+    logs_dir = DATA_DIR / "logs"
     for filename in (f"{service}-current-app-logs.jsonl", f"{service}-2026-05-14-app-logs.jsonl"):
         path = logs_dir / filename
         if not path.exists():
-            logger.debug("Logs fallback file %s not found", filename)
             continue
         try:
             entries = []
@@ -292,13 +350,11 @@ def _load_logs_fallback(
                         "labels": {"service": service},
                     })
             if entries:
-                logger.info("Loaded logs fallback from %s (%d lines)", filename, len(entries))
                 return entries
         except (json.JSONDecodeError, OSError) as exc:
             logger.warning("Failed to read logs fallback %s: %s", filename, exc)
             continue
-
-    return None
+    return []
 
 
 # ---------------------------------------------------------------------------
@@ -499,12 +555,129 @@ def _try_parse_timestamp(ts: str) -> Optional[datetime]:
 
 
 # ---------------------------------------------------------------------------
+# Distributed trace reconstruction
+# ---------------------------------------------------------------------------
+
+
+def _order_spans(spans: list[dict]) -> list[dict]:
+    """Order one trace's spans root-first, each root's children depth-first.
+
+    Roots (``parent_span_id == ""``) are ordered by their position in the
+    canonical JOURNEY_ORDER so the reconstructed path reads login -> ... ->
+    logout regardless of the order Loki happened to return entries in.
+    """
+    by_id = {s.get("span_id"): s for s in spans if s.get("span_id")}
+    children: dict = defaultdict(list)
+    roots = []
+    for s in spans:
+        pid = s.get("parent_span_id") or ""
+        if pid and pid in by_id:
+            children[pid].append(s)
+        else:
+            roots.append(s)
+
+    def journey_key(s: dict):
+        step = (s.get("service"), s.get("endpoint"))
+        return JOURNEY_ORDER.index(step) if step in JOURNEY_ORDER else len(JOURNEY_ORDER)
+
+    roots.sort(key=journey_key)
+    for child_list in children.values():
+        child_list.sort(key=lambda s: s.get("span_id", ""))
+
+    ordered = []
+
+    def visit(span: dict) -> None:
+        ordered.append(span)
+        for child in children.get(span.get("span_id"), []):
+            visit(child)
+
+    for root in roots:
+        visit(root)
+    return ordered
+
+
+def analyze_traces(log_entries: Optional[list[dict]]) -> dict:
+    """Group log entries by ``trace_id`` and reconstruct user journeys.
+
+    Returns a dict with:
+      - ``total_traces``: distinct trace_id count seen in this window
+      - ``failed_traces``: traces containing at least one non-2xx span
+      - ``affected_users``: distinct user_id count among failed traces
+      - ``break_points``: up to 5 ``{service, endpoint, status_code, count}``
+        entries, where journeys most often first hit a non-2xx response
+      - ``sample_path``: the ordered span list (login -> ... -> logout, or
+        wherever it broke) for one representative failed trace, or None
+    """
+    result = {
+        "total_traces": 0,
+        "failed_traces": 0,
+        "affected_users": 0,
+        "break_points": [],
+        "sample_path": None,
+        "sample_trace_id": None,
+    }
+    if not log_entries:
+        return result
+
+    spans_by_trace: dict = defaultdict(list)
+    for entry in log_entries:
+        try:
+            obj = json.loads(entry.get("line", ""))
+        except (json.JSONDecodeError, TypeError):
+            continue
+        trace_id = obj.get("trace_id")
+        if trace_id:
+            spans_by_trace[trace_id].append(obj)
+
+    if not spans_by_trace:
+        return result
+
+    result["total_traces"] = len(spans_by_trace)
+    failed_users: set = set()
+    break_counter: Counter = Counter()
+    sample_path = None
+
+    for trace_id, spans in spans_by_trace.items():
+        ordered = _order_spans(spans)
+        failed = [s for s in ordered if s.get("status_code", 200) >= 400]
+        if not failed:
+            continue
+        result["failed_traces"] += 1
+        first_fail = failed[0]
+        break_counter[(first_fail.get("service"), first_fail.get("endpoint"),
+                        first_fail.get("status_code"))] += 1
+        if ordered and ordered[0].get("user_id"):
+            failed_users.add(ordered[0]["user_id"])
+        if sample_path is None:
+            sample_path = ordered
+            result["sample_trace_id"] = trace_id
+
+    result["affected_users"] = len(failed_users)
+    result["break_points"] = [
+        {"service": svc, "endpoint": ep, "status_code": code, "count": n}
+        for (svc, ep, code), n in break_counter.most_common(5)
+    ]
+    if sample_path:
+        result["sample_path"] = [
+            {
+                "service": s.get("service"), "endpoint": s.get("endpoint"),
+                "status_code": s.get("status_code"), "latency_ms": s.get("latency_ms"),
+            }
+            for s in sample_path
+        ]
+
+    logger.info("analyze_traces: %d trace(s), %d failed, %d affected user(s)",
+                result["total_traces"], result["failed_traces"], result["affected_users"])
+    return result
+
+
+# ---------------------------------------------------------------------------
 # Combined query
 # ---------------------------------------------------------------------------
 
 
 def query_logs(
-    service: str = DEFAULT_SERVICE,
+    service: Optional[str] = DEFAULT_SERVICE,
     timeframe: str = "15m",
 ) -> dict:
     """Query both metrics and logs, with automatic fallback.
@@ -518,7 +691,7 @@ def query_logs(
         }
     """
     result: dict = {"metrics": None, "logs": None, "source": "live"}
-    logger.info("query_logs(service='%s', timeframe='%s')", service, timeframe)
+    logger.info("query_logs(service='%s', timeframe='%s')", service or "all", timeframe)
 
     # --- Metrics -------------------------------------------------------
     prom_data = query_prometheus(service, timeframe)
