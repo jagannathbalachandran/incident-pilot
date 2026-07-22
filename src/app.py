@@ -35,24 +35,66 @@ pilot = IncidentPilot()
 _FLASK_API = os.getenv("FLASK_API_URL", "http://localhost:5001")
 
 # Static fallback if the generator isn't reachable yet when the UI starts.
-_FALLBACK_SERVICES = ["auth-service", "listing-service", "checkout-api", "payment-service"]
+# Matches flask-generator/topology.py's SERVICES catalog (including the
+# non-user-facing services -- they're still valid incident targets).
+_FALLBACK_SERVICE_INFO = [
+    {"name": "auth-service", "uses_db_pool": False, "uses_cache": True},
+    {"name": "listing-service", "uses_db_pool": True, "uses_cache": True},
+    {"name": "checkout-api", "uses_db_pool": True, "uses_cache": True},
+    {"name": "payment-service", "uses_db_pool": True, "uses_cache": False},
+    {"name": "inventory-svc", "uses_db_pool": False, "uses_cache": False},
+    {"name": "fraud-scoring-svc", "uses_db_pool": False, "uses_cache": False},
+]
 
 
-def _fetch_service_names() -> list:
-    """Fetch the topology's service names from the generator, for the
-    service-selector dropdown. Falls back to a static list if unreachable."""
+def _fetch_service_info() -> list:
+    """Fetch every service's capability info (name, uses_db_pool, uses_cache)
+    from the generator. Falls back to a static list if unreachable.
+
+    Deliberately includes non-user-facing services (payment-service,
+    inventory-svc, fraud-scoring-svc) -- they're still valid incident
+    targets (e.g. fraud-scoring-svc is the default target for the fraud
+    kind), just not steps a simulated end-user hits directly.
+    """
     try:
         resp = requests.get(f"{_FLASK_API}/api/services", timeout=5)
         data = resp.json()
-        names = [s["name"] for s in data.get("services", []) if s.get("user_facing")]
-        if names:
-            return names
+        info = [
+            {
+                "name": s["name"],
+                "uses_db_pool": s.get("uses_db_pool", False),
+                "uses_cache": s.get("uses_cache", False),
+            }
+            for s in data.get("services", [])
+        ]
+        if info:
+            return info
     except Exception as exc:
         logger.warning("Failed to fetch service list, using static fallback: %s", exc)
-    return list(_FALLBACK_SERVICES)
+    return list(_FALLBACK_SERVICE_INFO)
 
 
-SERVICE_CHOICES = ["(kind default)"] + _fetch_service_names()
+_SERVICE_INFO = _fetch_service_info()
+SERVICE_CAPABILITIES = {s["name"]: s for s in _SERVICE_INFO}
+SERVICE_NAMES = [s["name"] for s in _SERVICE_INFO]
+SERVICE_CHOICES = ["(kind default)"] + SERVICE_NAMES
+TRIAGE_SERVICE_CHOICES = ["(all services)"] + SERVICE_NAMES
+
+
+def _service_capability_hint(service: str) -> str:
+    """Short markdown line showing which incident kinds a service supports,
+    so picking an invalid (kind, service) combo is visible before you click."""
+    if not service or service == "(kind default)":
+        return "_Pick a service to see which incident kinds it supports (or leave this as the kind's own default target)._"
+    caps = SERVICE_CAPABILITIES.get(service)
+    if caps is None:
+        return f"_No capability info available for `{service}`._"
+    pool_mark = "✅" if caps["uses_db_pool"] else "❌"
+    cache_mark = "✅" if caps["uses_cache"] else "❌"
+    return (
+        f"**`{service}` supports:** {pool_mark} Pool Exhaustion&nbsp;&nbsp;|&nbsp;&nbsp;"
+        f"{cache_mark} Cache Failover&nbsp;&nbsp;|&nbsp;&nbsp;✅ Fraud Outage (no prerequisite)"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -430,7 +472,7 @@ with gr.Blocks(
                     )
                 with gr.Column(scale=1, min_width=160):
                     triage_service_dd = gr.Dropdown(
-                        choices=["(all services)"] + _fetch_service_names(),
+                        choices=TRIAGE_SERVICE_CHOICES,
                         value="(all services)",
                         label="Scope to service",
                     )
@@ -489,6 +531,12 @@ with gr.Blocks(
                 choices=SERVICE_CHOICES,
                 value="(kind default)",
                 label="Target service",
+            )
+            capability_hint = gr.Markdown(value=_service_capability_hint("(kind default)"))
+            service_dd.change(
+                fn=_service_capability_hint,
+                inputs=[service_dd],
+                outputs=[capability_hint],
             )
 
             with gr.Row():
