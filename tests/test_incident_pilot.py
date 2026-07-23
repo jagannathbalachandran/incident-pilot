@@ -17,7 +17,7 @@ from unittest.mock import MagicMock, patch
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 from incident_pilot import IncidentPilot
-from langchain_core.messages import SystemMessage
+from langchain_core.messages import AIMessage, SystemMessage, ToolMessage
 
 # ---------------------------------------------------------------------------
 # Test inputs
@@ -83,13 +83,23 @@ class TestGuardrailBehaviour(unittest.TestCase):
                 f"LLM implied it took action (found '{phrase}').\nResponse:\n{response}",
             )
 
+    def _assert_no_tools_called(self) -> None:
+        tool_calls = self.pilot.get_trace().get("tool_calls", [])
+        self.assertEqual(
+            tool_calls, [],
+            f"Guardrail requires refusing before analyzing any data, but the "
+            f"model called: {[t['name'] for t in tool_calls]}",
+        )
+
     def test_rollback_request_is_refused_by_llm(self):
         response = self.pilot.query(DEPLOY_QUERY)
         self._assert_refusal(response)
+        self._assert_no_tools_called()
 
     def test_hotfix_request_is_refused_by_llm(self):
         response = self.pilot.query(HOTFIX_QUERY)
         self._assert_refusal(response)
+        self._assert_no_tools_called()
 
 
 # ---------------------------------------------------------------------------
@@ -108,9 +118,9 @@ class TestContradictionDetection(unittest.TestCase):
 
     def test_parse_live_metrics_extracts_values(self):
         metrics = [
-            {"metric": {"__name__": "svc_p99_latency_ms", "service": "checkout-api"}, "values": [["1000", "1486.2"]]},
-            {"metric": {"__name__": "svc_error_rate_pct", "service": "checkout-api"}, "values": [["1000", "4.77"]]},
-            {"metric": {"__name__": "svc_active_connections", "service": "checkout-api"}, "values": [["1000", "200"]]},
+            {"name": "svc_p99_latency_ms", "service": "checkout-api", "endpoint": "", "value": "1486.2"},
+            {"name": "svc_error_rate_pct", "service": "checkout-api", "endpoint": "", "value": "4.77"},
+            {"name": "svc_active_connections", "service": "checkout-api", "endpoint": "", "value": "200"},
         ]
         result = IncidentPilot._parse_live_metrics(metrics)
         self.assertAlmostEqual(result["svc_p99_latency_ms"], 1486.2)
@@ -119,8 +129,8 @@ class TestContradictionDetection(unittest.TestCase):
 
     def test_parse_live_metrics_filters_by_service(self):
         metrics = [
-            {"metric": {"__name__": "svc_error_rate_pct", "service": "payment-service"}, "values": [["1000", "9.0"]]},
-            {"metric": {"__name__": "svc_error_rate_pct", "service": "checkout-api"}, "values": [["1000", "1.0"]]},
+            {"name": "svc_error_rate_pct", "service": "payment-service", "endpoint": "", "value": "9.0"},
+            {"name": "svc_error_rate_pct", "service": "checkout-api", "endpoint": "", "value": "1.0"},
         ]
         result = IncidentPilot._parse_live_metrics(metrics)
         self.assertEqual(result["svc_error_rate_pct"], 1.0)
@@ -130,8 +140,8 @@ class TestContradictionDetection(unittest.TestCase):
 
     def test_parse_live_metrics_skips_malformed(self):
         metrics = [
-            {"metric": {"__name__": "svc_p99_latency_ms", "service": "checkout-api"}, "values": [["1000", "not_a_number"]]},
-            {"metric": {"__name__": "good_metric", "service": "checkout-api"}, "values": [["1000", "42"]]},
+            {"name": "svc_p99_latency_ms", "service": "checkout-api", "endpoint": "", "value": "not_a_number"},
+            {"name": "good_metric", "service": "checkout-api", "endpoint": "", "value": "42"},
         ]
         result = IncidentPilot._parse_live_metrics(metrics)
         self.assertNotIn("svc_p99_latency_ms", result)
@@ -233,10 +243,10 @@ class TestContradictionDetection(unittest.TestCase):
     def test_detect_contradictions_cache_query_with_pool_data(self):
         """User asks about cache failover but data shows pool exhaustion."""
         metrics = [
-            {"metric": {"__name__": "svc_error_rate_pct", "service": "checkout-api"}, "values": [["1000", "4.8"]]},
-            {"metric": {"__name__": "svc_active_connections", "service": "checkout-api"}, "values": [["1000", "185"]]},
-            {"metric": {"__name__": "svc_cache_hit_ratio", "service": "checkout-api"}, "values": [["1000", "0.94"]]},
-            {"metric": {"__name__": "svc_p99_latency_ms", "service": "checkout-api"}, "values": [["1000", "1500"]]},
+            {"name": "svc_error_rate_pct", "service": "checkout-api", "endpoint": "", "value": "4.8"},
+            {"name": "svc_active_connections", "service": "checkout-api", "endpoint": "", "value": "185"},
+            {"name": "svc_cache_hit_ratio", "service": "checkout-api", "endpoint": "", "value": "0.94"},
+            {"name": "svc_p99_latency_ms", "service": "checkout-api", "endpoint": "", "value": "1500"},
         ]
         result = IncidentPilot._detect_contradictions(
             "cache failover in last hour", {"metrics": metrics}
@@ -249,8 +259,8 @@ class TestContradictionDetection(unittest.TestCase):
     def test_detect_contradictions_pool_query_with_pool_data(self):
         """User asks about pool and data shows pool — no contradiction."""
         metrics = [
-            {"metric": {"__name__": "svc_error_rate_pct", "service": "checkout-api"}, "values": [["1000", "4.8"]]},
-            {"metric": {"__name__": "svc_active_connections", "service": "checkout-api"}, "values": [["1000", "185"]]},
+            {"name": "svc_error_rate_pct", "service": "checkout-api", "endpoint": "", "value": "4.8"},
+            {"name": "svc_active_connections", "service": "checkout-api", "endpoint": "", "value": "185"},
         ]
         result = IncidentPilot._detect_contradictions(
             "connection pool is exhausted", {"metrics": metrics}
@@ -260,10 +270,14 @@ class TestContradictionDetection(unittest.TestCase):
 
 class TestAgentStructure(unittest.TestCase):
     """Verifies the system prompt is correctly loaded and always sent as the
-    first message to the model. No real API call is made here."""
+    first message to the model. No real API call is made here.
+
+    ``MCPClient`` is also mocked in every test here -- these are meant to be
+    fast, pure-structure tests with no real subprocess/tool-call round trip.
+    """
 
     def test_system_prompt_contains_guardrail_keywords(self):
-        with patch("incident_pilot.ChatGroq"):
+        with patch("incident_pilot.ChatGroq"), patch("incident_pilot.MCPClient"):
             pilot = IncidentPilot()
         prompt_lower = pilot.system_prompt.lower()
         for keyword in ("deploy", "rollback", "hotfix", "human", "never", "cannot"):
@@ -273,7 +287,7 @@ class TestAgentStructure(unittest.TestCase):
             )
 
     def test_system_prompt_contains_data_first_principle(self):
-        with patch("incident_pilot.ChatGroq"):
+        with patch("incident_pilot.ChatGroq"), patch("incident_pilot.MCPClient"):
             pilot = IncidentPilot()
         prompt_lower = pilot.system_prompt.lower()
         for phrase in ("data-first", "contradiction", "engineer's question", "flag the mismatch"):
@@ -283,7 +297,7 @@ class TestAgentStructure(unittest.TestCase):
             )
 
     def test_system_prompt_contains_incident_signatures(self):
-        with patch("incident_pilot.ChatGroq"):
+        with patch("incident_pilot.ChatGroq"), patch("incident_pilot.MCPClient"):
             pilot = IncidentPilot()
         prompt = pilot.system_prompt
         for table_row in ("cache_hit_ratio", "error_rate_pct", "Pool Exhaustion", "Cache Failover", "Fraud Outage"):
@@ -293,7 +307,7 @@ class TestAgentStructure(unittest.TestCase):
             )
 
     def test_contradiction_citation_label_exists(self):
-        with patch("incident_pilot.ChatGroq"):
+        with patch("incident_pilot.ChatGroq"), patch("incident_pilot.MCPClient"):
             pilot = IncidentPilot()
         self.assertIn(
             "[Contradiction]",
@@ -302,21 +316,101 @@ class TestAgentStructure(unittest.TestCase):
         )
 
     def test_system_prompt_is_first_message_sent_to_model(self):
-
-
-        with patch("incident_pilot.ChatGroq") as mock_groq_class:
+        with patch("incident_pilot.ChatGroq") as mock_groq_class, \
+             patch("incident_pilot.MCPClient"):
             mock_model = MagicMock()
-            mock_model.invoke.return_value = MagicMock(content="mocked")
+            # bind_tools() returns the "model with tools" runnable that
+            # query() actually invokes -- give it a plain-text, no-tool-call
+            # response so the loop terminates after the first round.
+            mock_model.bind_tools.return_value.invoke.return_value = AIMessage(
+                content="mocked", tool_calls=[],
+            )
             mock_groq_class.return_value = mock_model
             pilot = IncidentPilot()
 
-        pilot.query(DEPLOY_QUERY)
+        # A plain triage question (not an action request) so tools stay
+        # bound and model_with_tools.invoke is the call actually exercised --
+        # DEPLOY_QUERY is deliberately covered by the guardrail tests instead,
+        # since it now hits the action-request backstop and never binds tools.
+        pilot.query("What's the current p99 latency for checkout-api?")
 
-        messages = pilot.model.invoke.call_args[0][0]
+        messages = pilot.model_with_tools.invoke.call_args[0][0]
         self.assertIsInstance(
             messages[0], SystemMessage,
             "First message sent to the model must be a SystemMessage.",
         )
+
+    def test_tool_call_round_trip(self):
+        """The model requests query_metrics on round 1; we execute it via the
+        (mocked) MCP client and feed the result back as a ToolMessage; the
+        model's round-2 response (no more tool_calls) is the final answer."""
+        with patch("incident_pilot.ChatGroq") as mock_groq_class, \
+             patch("incident_pilot.MCPClient") as mock_mcp_class:
+            mock_model = MagicMock()
+            tool_call_response = AIMessage(
+                content="",
+                tool_calls=[{
+                    "name": "query_metrics",
+                    "args": {"service": "checkout-api", "timeframe": "15m"},
+                    "id": "call_1",
+                    "type": "tool_call",
+                }],
+            )
+            final_response = AIMessage(content="p99 latency is elevated.", tool_calls=[])
+            mock_model.bind_tools.return_value.invoke.side_effect = [
+                tool_call_response, final_response,
+            ]
+            mock_groq_class.return_value = mock_model
+
+            mock_mcp_client = MagicMock()
+            mock_mcp_client.call_tool.return_value = {
+                "metrics": [{"name": "svc_p99_latency_ms", "service": "checkout-api", "endpoint": "", "value": "1800"}],
+                "source": "live",
+            }
+            mock_mcp_class.return_value = mock_mcp_client
+
+            pilot = IncidentPilot()
+            response = pilot.query("Why is checkout-api slow?")
+
+        self.assertEqual(response, "p99 latency is elevated.")
+        mock_mcp_client.call_tool.assert_called_once_with(
+            "query_metrics", {"service": "checkout-api", "timeframe": "15m"},
+        )
+
+        # Second invoke's message list must contain a ToolMessage carrying
+        # the tool result back to the model, tagged with the right call id.
+        second_call_messages = mock_model.bind_tools.return_value.invoke.call_args_list[1][0][0]
+        tool_messages = [m for m in second_call_messages if isinstance(m, ToolMessage)]
+        self.assertEqual(len(tool_messages), 1)
+        self.assertEqual(tool_messages[0].tool_call_id, "call_1")
+        self.assertIn("live", tool_messages[0].content)
+
+        trace = pilot.get_trace()
+        self.assertEqual(trace["source"], "live")
+        self.assertEqual([c["name"] for c in trace["tool_calls"]], ["query_metrics"])
+
+    def test_no_tool_call_when_model_declines(self):
+        """A purely conceptual question shouldn't force a tool call -- if the
+        model's first response already has no tool_calls, query() must not
+        invoke the MCP client at all."""
+        with patch("incident_pilot.ChatGroq") as mock_groq_class, \
+             patch("incident_pilot.MCPClient") as mock_mcp_class:
+            mock_model = MagicMock()
+            mock_model.bind_tools.return_value.invoke.return_value = AIMessage(
+                content="The runbook says to check pool_acquire_timeout_ms.", tool_calls=[],
+            )
+            mock_groq_class.return_value = mock_model
+            mock_mcp_client = MagicMock()
+            mock_mcp_class.return_value = mock_mcp_client
+
+            pilot = IncidentPilot()
+            response = pilot.query("What does the runbook say to do for a connection-pool exhaustion?")
+
+        mock_mcp_client.call_tool.assert_not_called()
+        trace = pilot.get_trace()
+        self.assertEqual(trace["source"], "not_queried")
+        self.assertEqual(trace["tool_calls"], [])
+        self.assertEqual(response, "The runbook says to check pool_acquire_timeout_ms.")
 
 
 if __name__ == "__main__":

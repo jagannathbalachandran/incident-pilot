@@ -45,7 +45,8 @@ TICK_INTERVAL_SECONDS = int(_tick_env) if _tick_env.strip() else _INTERVAL
 SIM_MINUTES_PER_TICK = 1
 
 # How many synthetic user journeys (login -> ... -> logout) to run per tick.
-JOURNEYS_PER_TICK = int(os.getenv("JOURNEYS_PER_TICK", "8"))
+_journeys_env = os.getenv("JOURNEYS_PER_TICK", "")
+JOURNEYS_PER_TICK = int(_journeys_env) if _journeys_env.strip() else 8
 N_USERS = 20
 
 # ---------------------------------------------------------------------------

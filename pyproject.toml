@@ -23,6 +23,7 @@ dependencies = [
     "prometheus-client>=0.21,<1.0",
     "pydantic>=2.0,<3.0",
     "uvicorn[standard]>=0.27.0,<0.38.0",
+    "mcp",
 ]
 
 [dependency-groups]
@@ -40,3 +41,10 @@ dev = [
 [tool.uv]
 # Torch must be installed separately due to its platform-specific index URL:
 #   uv pip install torch --index-url https://download.pytorch.org/whl/cpu
+#
+# On Intel macOS, `uv lock`/`uv add` can fail to resolve because chromadb's
+# onnxruntime pin has no macosx_x86_64 wheel for some versions. If that
+# happens, install new deps (like `mcp` above) directly instead:
+#   uv pip install mcp
+# then reconcile uv.lock on a platform where the full resolve succeeds
+# (Apple Silicon or Linux CI).

@@ -308,6 +308,18 @@ def _format_trace(trace: dict) -> str:
         source_badge = "🔴 **Unavailable**"
     parts.append(f"**Data source:** {source_badge}")
 
+    # --- Tool calls (agent-decided) ---
+    tool_calls = trace.get("tool_calls", [])
+    if tool_calls:
+        call_lines = [
+            f"  {i}. `{c['name']}({', '.join(f'{k}={v!r}' for k, v in c['args'].items())})` "
+            f"→ source=`{c['result'].get('source', '?')}`"
+            for i, c in enumerate(tool_calls, 1)
+        ]
+        parts.append("**Tool calls made this turn:**\n" + "\n".join(call_lines))
+    else:
+        parts.append("**Tool calls made this turn:** *None — the agent judged live telemetry wasn't needed*")
+
     # --- RAG Chunks ---
     chunks = trace.get("chunks", [])
     if chunks:
@@ -404,12 +416,12 @@ def triage(incident_description: str, service: str = "(all services)"):
     logger.info("Triage request [req=%s]: '%s...' (service=%s)",
                 request_id, incident_description[:80], target or "all")
 
-    # Query live data once, then pass the result to query()
-    logs_result = pilot.query_logs(timeframe="15m", service=target)
-    live_source = logs_result.get("source", "unavailable")
-    response = pilot.query(
-        incident_description, live_data_timeframe="15m", logs_result=logs_result, service=target,
-    )
+    # The agent itself decides whether/which telemetry tool(s) to call --
+    # no pre-fetch here, so the badge below reflects what actually happened
+    # this turn, not a fetch we forced regardless of the question.
+    response = pilot.query(incident_description, service=target)
+    trace = pilot.get_trace()
+    live_source = trace.get("source", "not_queried")
 
     # Build the data-source badge
     if live_source == "live":
@@ -418,16 +430,19 @@ def triage(incident_description: str, service: str = "(all services)"):
     elif live_source == "static_fallback":
         badge = "🟡 **Data source: Static files (fallback)**\n\n"
         logger.debug("triage badge: 🟡 Static fallback")
+    elif live_source == "not_queried":
+        badge = "⚪ **Data source: Not queried — the agent answered without live telemetry**\n\n"
+        logger.debug("triage badge: ⚪ Not queried")
     else:
         badge = "🔴 **Data source: Unavailable**\n\n"
         logger.debug("triage badge: 🔴 Unavailable")
 
     # Build the trace panel
-    trace = pilot.get_trace()
     trace_md = _format_trace(trace)
 
-    logger.info("Triage response [req=%s]: %d characters (source=%s)",
-                 request_id, len(response), live_source)
+    logger.info("Triage response [req=%s]: %d characters (source=%s, tool_calls=%s)",
+                 request_id, len(response), live_source,
+                 [t["name"] for t in trace.get("tool_calls", [])])
     return badge + response, trace_md
 
 

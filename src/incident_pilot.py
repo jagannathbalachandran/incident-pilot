@@ -1,9 +1,12 @@
 """
-IncidentPilot agent — Week 1, Task 3 + Task 8.
+IncidentPilot agent — Week 1, Task 3 + Task 8 + Task 13 (MCP tool calling).
 
 Initialises ChatGroq with the triage-copilot system prompt, retrieves
-grounding chunks from the RAG vector store, queries live Prometheus/
-Loki metrics (with static fallback), and returns a cited triage summary.
+grounding chunks from the RAG vector store, and lets the model itself decide
+whether/which of two MCP-backed tools (``query_metrics``, ``query_logs``) to
+call before producing a cited triage summary. Tool calls are a real MCP
+round trip to ``mcp_server/server.py`` (spawned once, over stdio) -- not a
+same-process function call.
 
 Running this file directly fires a grounded triage query against the
 connection-pool-exhaustion runbook.
@@ -13,26 +16,100 @@ Requires:
     A vector store built via ``python src/ingestion.py``.
 """
 
+import json
 import logging
 import os
+import re
 from pathlib import Path
+from typing import Optional
 
 from dotenv import load_dotenv
 from langchain_groq import ChatGroq
-from langchain_core.messages import HumanMessage, SystemMessage
+from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage
+from langchain_core.tools import StructuredTool
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_chroma import Chroma
 
 from logging_config import setup_logging
-from query_logs import analyze_logs as _analyze_logs
-from query_logs import analyze_traces as _analyze_traces
-from query_logs import query_logs as _query_logs
+from mcp_client import MCPClient
 from request_context import get_request_id
 
 logger = logging.getLogger(__name__)
 
 # Load .env from repo root so GROQ_API_KEY is available without a shell export
 load_dotenv(Path(__file__).parent.parent / ".env")
+
+# Safety cap on tool-calling rounds per query, so a model that keeps
+# requesting tools can't loop forever.
+MAX_TOOL_ROUNDS = 3
+
+# Priority-1 guardrail (prompts/system_prompt.md) says the model must refuse
+# deploy/rollback/hotfix-style requests without calling a tool or analyzing
+# data. Relying on the prompt alone isn't enough -- a bound tool can still
+# get invoked (or malformed-called) against that instruction. This is a
+# code-level backstop: for messages matching these action verbs, tools are
+# never bound to that call at all, so no tool call is *possible*, not just
+# discouraged.
+_ACTION_REQUEST_PATTERN = re.compile(
+    r"\b(deploy|roll[\s-]?back|hotfix|release|restart|merge|scale|drain|"
+    r"terminate|push(?:ing)?\s+(?:a\s+)?(?:fix|change|update)|"
+    r"change\s+(?:the\s+)?config|apply\s+(?:a\s+|the\s+)?config)\b",
+    re.IGNORECASE,
+)
+
+
+def _looks_like_action_request(text: str) -> bool:
+    return bool(_ACTION_REQUEST_PATTERN.search(text))
+
+
+def _build_tools(mcp_client: MCPClient) -> list[StructuredTool]:
+    """Build LangChain tool wrappers around the two MCP-backed telemetry
+    tools. Each wrapper's body is just a real MCP ``call_tool`` round trip
+    to ``mcp_server/server.py`` -- no telemetry logic lives here.
+
+    Docstrings below become the tool descriptions the model actually reads
+    to decide whether/which tool to call -- keep them accurate.
+    """
+
+    def query_metrics(service: Optional[str] = None, timeframe: str = "15m") -> dict:
+        """Query live Prometheus metrics: p99 latency, error rate, active
+        connections, and cache hit ratio. Falls back to static synthetic
+        data automatically if Prometheus is unreachable; the returned
+        ``source`` field says which happened ("live" / "static_fallback" /
+        "unavailable").
+
+        Args:
+            service: Service name to scope to (e.g. "checkout-api"). Omit
+                to query across every simulated service at once.
+            timeframe: Relative window like "15m" or "1h". Defaults to the
+                last 15 minutes.
+        """
+        return mcp_client.call_tool(
+            "query_metrics", {"service": service, "timeframe": timeframe}
+        )
+
+    def query_logs(service: Optional[str] = None, timeframe: str = "15m") -> dict:
+        """Query application logs and return a structured analysis: log
+        level breakdown, top recurring message patterns, error clusters,
+        and reconstructed user-journey traces (login -> ... -> logout).
+        Falls back to static synthetic data automatically if Loki is
+        unreachable; the returned ``source`` field says which happened.
+
+        Args:
+            service: Service name to scope to. Omit to query across every
+                simulated service (needed to reconstruct a full journey,
+                since its spans land in more than one service's log stream).
+            timeframe: Relative window like "15m" or "1h". Defaults to the
+                last 15 minutes.
+        """
+        return mcp_client.call_tool(
+            "query_logs", {"service": service, "timeframe": timeframe}
+        )
+
+    return [
+        StructuredTool.from_function(func=query_metrics, name="query_metrics"),
+        StructuredTool.from_function(func=query_logs, name="query_logs"),
+    ]
 
 SYSTEM_PROMPT_PATH = Path(__file__).parent.parent / "prompts" / "system_prompt.md"
 VECTORSTORE_DIR = Path(__file__).parent.parent / "synthetic-data" / "vectorstore"
@@ -82,12 +159,24 @@ class IncidentPilot:
         )
         self.vectorstore = self._load_vectorstore()
 
+        # MCP: spawn the telemetry tool server once, bind its tools onto the
+        # model so the LLM itself decides whether/which to call per query.
+        self.mcp_client = MCPClient()
+        self.mcp_client.start()
+        self.tools = _build_tools(self.mcp_client)
+        self.model_with_tools = self.model.bind_tools(self.tools)
+
         # Cache for trace data (exposed via get_trace() for the UI)
-        self._last_logs_query: dict | None = None
         self._last_trace: dict | None = None
 
-        logger.info("IncidentPilot initialised (vectorstore=%s)",
-                     "loaded" if self.vectorstore else "unavailable")
+        logger.info("IncidentPilot initialised (vectorstore=%s, tools=%s)",
+                     "loaded" if self.vectorstore else "unavailable",
+                     [t.name for t in self.tools])
+
+    def close(self) -> None:
+        """Shut down the MCP server subprocess. Not required for normal
+        process exit (it's a daemon thread), but useful for tests/cleanup."""
+        self.mcp_client.close()
 
     # ------------------------------------------------------------------
     # RAG retrieval
@@ -142,122 +231,21 @@ class IncidentPilot:
         return "\n\n---\n\n".join(blocks)
 
     # ------------------------------------------------------------------
-    # Live metrics / logs query
+    # MCP tool-calling loop
     # ------------------------------------------------------------------
 
-    def query_logs(self, timeframe: str = "15m", service: str | None = None) -> dict:
-        """Query live metrics and logs, returning a dict with keys
-        ``metrics``, ``logs``, and ``source``.
-
-        ``service=None`` (the default) queries across every simulated
-        service, which is what's needed to reconstruct a user journey
-        whose spans land in more than one service's log stream. Pass a
-        service name to scope the query to just that service.
-
-        The result is cached in ``self._last_logs_query`` for the UI.
-        """
-        logger.debug("query_logs(timeframe='%s', service='%s')", timeframe, service or "all")
-        self._last_logs_query = _query_logs(service=service, timeframe=timeframe)
-        source = self._last_logs_query.get("source", "unknown")
-        metrics_count = len(self._last_logs_query.get("metrics") or [])
-        logs_count = len(self._last_logs_query.get("logs") or [])
-        logger.info("query_logs result: source=%s metrics=%d logs=%d",
-                     source, metrics_count, logs_count)
-        return self._last_logs_query
-
-    def _format_live_data(self, logs_result: dict) -> str:
-        """Format the live metrics/logs result into a text block for the LLM.
-
-        Metrics are shown as a snapshot. Logs are analyzed for patterns
-        (level breakdown, top messages, error clusters) rather than dumped
-        as raw lines, so the LLM gets a structured summary.
-        """
-        source_label = logs_result.get("source", "unavailable")
-        parts = [f"[Data source: {source_label}]"]
-        logger.debug("Formatting live data (source=%s)", source_label)
-
-        # --- Metrics ---
-        metrics = logs_result.get("metrics")
-        if metrics:
-            lines = []
-            for series in metrics[:12]:
-                m = series.get("metric", {})
-                name = m.get("__name__", "unknown")
-                svc = m.get("service", "")
-                endpoint = m.get("endpoint", "")
-                scope = f"service={svc}" + (f",endpoint={endpoint}" if endpoint else "")
-                values = series.get("values", [])
-                if values:
-                    latest = values[-1][1]
-                    lines.append(f"  {name}{{{scope}}}: {latest} (latest)")
-            if lines:
-                parts.append("Live metrics (sampled):\n" + "\n".join(lines))
-
-        # --- Distributed traces ---
-        logs = logs_result.get("logs")
-        if logs:
-            traces = _analyze_traces(logs)
-            if traces["total_traces"]:
-                trace_blocks = [
-                    f"  Journeys observed: {traces['total_traces']} "
-                    f"({traces['failed_traces']} failed, {traces['affected_users']} user(s) affected)"
-                ]
-                if traces["break_points"]:
-                    trace_blocks.append("  Most common break points:")
-                    for bp in traces["break_points"]:
-                        trace_blocks.append(
-                            f"    {bp['service']}{bp['endpoint']} -> {bp['status_code']} ({bp['count']}x)"
-                        )
-                if traces["sample_path"]:
-                    path_str = " -> ".join(
-                        f"{s['service']}{s['endpoint']}({s['status_code']})" for s in traces["sample_path"]
-                    )
-                    trace_blocks.append(
-                        f"  Sample failed journey (trace_id={traces['sample_trace_id']}): {path_str}"
-                    )
-                parts.append("Distributed traces (login -> ... -> logout):\n" + "\n".join(trace_blocks))
-
-        # --- Log analysis ---
-        if logs:
-            analysis = _analyze_logs(logs)
-            logger.debug("Log analysis: %d entries, error_rate=%.1f%%",
-                         analysis["total_entries"], analysis["error_rate_pct"])
-            log_blocks = []
-
-            # Level breakdown
-            if analysis["by_level"]:
-                level_str = ", ".join(
-                    f"{k}: {v}" for k, v in sorted(analysis["by_level"].items())
-                )
-                log_blocks.append(f"  Log level breakdown: {level_str}")
-
-            if analysis["error_rate_pct"] > 0:
-                log_blocks.append(
-                    f"  Error rate: {analysis['error_rate_pct']}% of log entries"
-                )
-
-            # Top messages
-            if analysis["top_messages"]:
-                log_blocks.append("  Most frequent log patterns:")
-                for msg in analysis["top_messages"][:5]:
-                    log_blocks.append(
-                        f"    [{msg['level']}] \"{msg['pattern']}\" — {msg['count']}x"
-                    )
-
-            # Error clusters
-            if analysis["error_clusters"]:
-                log_blocks.append(
-                    f"  Error clusters detected: {analysis['error_cluster_count']}"
-                )
-                for cluster in analysis["error_clusters"][:3]:
-                    log_blocks.append(
-                        f"    {cluster['count']} errors around {cluster['start']}"
-                    )
-
-            if log_blocks:
-                parts.append("Log analysis:\n" + "\n".join(log_blocks))
-
-        return "\n\n".join(parts)
+    def _call_mcp_tool(self, name: str, args: dict) -> dict:
+        """Execute one MCP tool call and return its result dict, or an
+        ``{"error": ...}`` dict if the call itself failed (e.g. the MCP
+        server process died) -- this is surfaced to the LLM as a tool
+        result like any other, rather than crashing the query."""
+        try:
+            result = self.mcp_client.call_tool(name, args)
+            logger.info("Tool call %s(%s) -> source=%s", name, args, result.get("source"))
+            return result
+        except Exception as exc:
+            logger.error("Tool call %s(%s) failed: %s", name, args, exc)
+            return {"error": str(exc)}
 
     # ------------------------------------------------------------------
     # Code-level contradiction detection
@@ -265,12 +253,13 @@ class IncidentPilot:
 
     @staticmethod
     def _parse_live_metrics(metrics: list, service: str = "checkout-api") -> dict:
-        """Extract named metric values for one service from the raw
-        Prometheus series list.
+        """Extract named metric values for one service from the condensed
+        ``query_metrics`` tool result (a list of
+        ``{"name", "service", "endpoint", "value"}`` dicts -- see
+        ``mcp_server.server._condense_metrics``).
 
         Returns a dict like ``{"svc_p99_latency_ms": 1486, "svc_error_rate_pct": 4.8, ...}``.
-        Only the **last** value from each matching series is kept. The
-        contradiction-check machinery below is scoped to one service
+        The contradiction-check machinery below is scoped to one service
         (``checkout-api`` by default, matching where the pool/cache/fraud
         scenarios default to) even though live queries now span every
         simulated service.
@@ -278,15 +267,14 @@ class IncidentPilot:
         parsed: dict[str, float] = {}
         if not metrics:
             return parsed
-        for series in metrics:
-            m = series.get("metric", {})
-            name = m.get("__name__", "")
-            if service and m.get("service") != service:
+        for entry in metrics:
+            name = entry.get("name", "")
+            if service and entry.get("service") != service:
                 continue
-            values = series.get("values", [])
-            if name and values:
+            value = entry.get("value")
+            if name and value is not None:
                 try:
-                    parsed[name] = float(values[-1][1])
+                    parsed[name] = float(value)
                 except (ValueError, TypeError):
                     pass
         return parsed
@@ -409,103 +397,139 @@ class IncidentPilot:
         Returns a dict with keys:
           - ``chunks``: list of RAG chunk dicts ``{source, section, content}``
           - ``metrics``: live metrics snapshot ``{name, service, endpoint, value}`` list
-          - ``log_analysis``: structured log analysis dict (from ``analyze_logs``)
-          - ``trace_summary``: distributed-trace summary dict (from ``analyze_traces``)
+            (empty if the model never called ``query_metrics`` this turn)
+          - ``log_analysis``: structured log analysis dict (empty if
+            ``query_logs`` was never called this turn)
+          - ``trace_summary``: distributed-trace summary dict (same)
           - ``trace_id``: sample failed trace's ID, if one was reconstructed
-          - ``augmented_input``: the full prompt sent to the LLM
-          - ``source``: data source label ("live" | "static_fallback" | "unavailable")
+          - ``tool_calls``: list of ``{name, args, result}`` for every MCP
+            tool call the model made this turn (empty list if none)
+          - ``augmented_input``: the initial prompt sent to the LLM
+          - ``source``: "live" | "static_fallback" | "unavailable" | "not_queried"
+            ("not_queried" means the model answered without calling either tool)
         """
         return (self._last_trace or {}).copy()
+
+    @staticmethod
+    def _merge_source(metrics_result: dict | None, logs_result: dict | None) -> str:
+        """Combine the ``source`` fields of whichever tool(s) were actually
+        called this turn into one label for the UI badge."""
+        if metrics_result is None and logs_result is None:
+            return "not_queried"
+        sources = [r.get("source") for r in (metrics_result, logs_result) if r is not None]
+        if "live" in sources:
+            return "live"
+        if "static_fallback" in sources:
+            return "static_fallback"
+        return "unavailable"
 
     # ------------------------------------------------------------------
     # Main query
     # ------------------------------------------------------------------
 
-    def query(
-        self,
-        user_input: str,
-        live_data_timeframe: str = "15m",
-        logs_result: dict | None = None,
-        service: str | None = None,
-    ) -> str:
-        """Run a full triage query: RAG retrieval + live metrics + LLM.
+    def query(self, user_input: str, service: str | None = None) -> str:
+        """Run a full triage query: RAG retrieval (always) + an MCP
+        tool-calling loop over ``query_metrics``/``query_logs`` that the
+        model itself decides whether/when to use + a cited answer.
 
         Args:
             user_input: The engineer's incident description.
-            live_data_timeframe: Time window for live data (default 15m).
-            logs_result: Pre-queried logs result to avoid querying twice.
-                         If None, queries live data automatically.
-            service: Scope the live query to one service; None queries
-                     across all of them (needed for journey reconstruction).
+            service: Optional hint passed to the model on which service to
+                     scope any telemetry query to, if it decides to call one.
 
         Returns the LLM's cited triage summary as a string.
         """
         req_id = get_request_id() or "-"
-        logger.info("Processing query [req=%s]: '%s...' (timeframe=%s, service=%s)",
-                     req_id, user_input[:80], live_data_timeframe, service or "all")
+        logger.info("Processing query [req=%s]: '%s...'", req_id, user_input[:80])
 
-        # 1. RAG retrieval
+        # 1. RAG retrieval -- unchanged, always runs (cheap, local, near-
+        #    always relevant to a triage question).
         chunks = self.retrieve(user_input)
         rag_block = self._format_context(chunks)
 
-        # 2. Live metrics / logs (use pre-queried result if provided)
-        if logs_result is None:
-            logs_result = self.query_logs(timeframe=live_data_timeframe, service=service)
-        live_block = self._format_live_data(logs_result)
-
-        # 3. Detect contradictions between user query and live data
-        contradiction_warning = self._detect_contradictions(user_input, logs_result)
-        if contradiction_warning:
-            logger.info("Contradiction detected: %s", contradiction_warning)
-
-        # 4. Build the augmented prompt (with contradiction warning if any)
-        contradiction_block = (
-            f"\n\n## Contradiction check\n\n"
-            f"{contradiction_warning}"
-            if contradiction_warning else ""
+        scope_hint = (
+            f'\n\n(If you query telemetry, scope it to service="{service}".)'
+            if service else ""
         )
         augmented_input = (
-            f"## Retrieved context (RAG)\n\n"
-            f"{rag_block}\n\n"
-            f"## Live metrics & logs\n\n"
-            f"{live_block}\n\n"
+            f"## Retrieved context (RAG)\n\n{rag_block}\n\n"
             f"---\n\n"
-            f"Engineer's incident description:\n{user_input}"
-            f"{contradiction_block}"
+            f"Engineer's incident description:\n{user_input}{scope_hint}"
         )
-
-        req_id = get_request_id() or "-"
-        logger.debug("Calling LLM [req=%s] (model=llama-3.3-70b-versatile)", req_id)
         messages = [
             SystemMessage(content=self.system_prompt),
             HumanMessage(content=augmented_input),
         ]
 
-        response = self.model.invoke(messages)
-        logger.info("LLM response received [req=%s] (%d characters)",
-                     req_id, len(response.content))
+        tool_trace: list[dict] = []
+        last_metrics_result: dict | None = None
+        last_logs_result: dict | None = None
+
+        # 2. Priority-1 guardrail backstop: for messages that look like a
+        #    deploy/rollback/hotfix/config-change request, don't even bind
+        #    tools to this call. The system prompt already tells the model
+        #    not to call a tool for these -- this makes it impossible for a
+        #    tool call to happen at all, rather than merely discouraged.
+        action_request = _looks_like_action_request(user_input)
+        model_for_this_turn = self.model if action_request else self.model_with_tools
+        if action_request:
+            logger.info("[req=%s] action-request pattern matched -- tools not bound this turn", req_id)
+
+        # 3. Let the model decide whether/which tools to call (when bound),
+        #    executing real MCP round trips for whatever it asks for.
+        logger.debug("Calling LLM [req=%s] (tools_bound=%s)", req_id, not action_request)
+        response = model_for_this_turn.invoke(messages)
+
+        rounds = 0
+        while getattr(response, "tool_calls", None) and rounds < MAX_TOOL_ROUNDS:
+            messages.append(response)
+            for call in response.tool_calls:
+                result = self._call_mcp_tool(call["name"], call["args"])
+                tool_trace.append({"name": call["name"], "args": call["args"], "result": result})
+                if call["name"] == "query_metrics":
+                    last_metrics_result = result
+                elif call["name"] == "query_logs":
+                    last_logs_result = result
+                messages.append(ToolMessage(content=json.dumps(result), tool_call_id=call["id"]))
+            rounds += 1
+            response = model_for_this_turn.invoke(messages)
+
+        if getattr(response, "tool_calls", None):
+            # Hit MAX_TOOL_ROUNDS while the model still wanted to call
+            # tools -- force a final textual answer from what's gathered.
+            logger.warning("[req=%s] hit MAX_TOOL_ROUNDS=%d with tool calls still pending",
+                            req_id, MAX_TOOL_ROUNDS)
+            messages.append(response)
+            messages.append(HumanMessage(
+                content="Give your final answer now, using only the tool "
+                        "results already gathered above."
+            ))
+            response = self.model.invoke(messages)
+
+        # 4. Contradiction check -- only meaningful if query_metrics was
+        #    actually called; fold the flag back in if one was found.
+        contradiction_warning = self._detect_contradictions(user_input, last_metrics_result or {})
+        if contradiction_warning:
+            logger.info("[req=%s] contradiction detected: %s", req_id, contradiction_warning)
+            messages.append(response)
+            messages.append(HumanMessage(
+                content=f"## Contradiction check\n\n{contradiction_warning}\n\n"
+                        f"Revise your answer to explicitly flag this, per your "
+                        f"[Contradiction] citation rule."
+            ))
+            response = model_for_this_turn.invoke(messages)
+
+        logger.info("LLM response received [req=%s] (%d characters, %d tool call(s))",
+                     req_id, len(response.content), len(tool_trace))
 
         # --- Build trace for the UI ---
-        trace_metrics = []
-        metrics_raw = (logs_result or {}).get("metrics", [])
-        if metrics_raw:
-            for series in metrics_raw[:12]:
-                m = series.get("metric", {})
-                name = m.get("__name__", "unknown")
-                values = series.get("values", [])
-                if values:
-                    trace_metrics.append({
-                        "name": name, "service": m.get("service", ""),
-                        "endpoint": m.get("endpoint", ""), "value": values[-1][1],
-                    })
+        # query_metrics already returns condensed {name, service, endpoint,
+        # value} entries (see mcp_server.server._condense_metrics) -- no
+        # further reshaping needed here.
+        trace_metrics = (last_metrics_result or {}).get("metrics", [])[:12]
 
-        trace_logs = logs_result or {}
-        trace_log_analysis = {}
-        trace_summary = {}
-        log_entries = trace_logs.get("logs")
-        if log_entries:
-            trace_log_analysis = _analyze_logs(log_entries)
-            trace_summary = _analyze_traces(log_entries)
+        trace_log_analysis = (last_logs_result or {}).get("log_analysis", {})
+        trace_summary = (last_logs_result or {}).get("trace_summary", {})
 
         self._last_trace = {
             "chunks": chunks,
@@ -513,8 +537,9 @@ class IncidentPilot:
             "log_analysis": trace_log_analysis,
             "trace_summary": trace_summary,
             "trace_id": trace_summary.get("sample_trace_id"),
+            "tool_calls": tool_trace,
             "augmented_input": augmented_input,
-            "source": (logs_result or {}).get("source", "unavailable"),
+            "source": self._merge_source(last_metrics_result, last_logs_result),
             "contradiction": contradiction_warning,
             "request_id": get_request_id(),
         }
@@ -534,21 +559,20 @@ if __name__ == "__main__":
 
     pilot = IncidentPilot()
 
-    _separator("triage (RAG + live data)")
+    _separator("triage (RAG + agent-decided MCP tool calls)")
     print(f"USER:\n  {TRIAGE_QUERY}\n")
 
     retrieved = pilot.retrieve(TRIAGE_QUERY)
     print(f"[retrieved {len(retrieved)} chunk(s): "
           f"{[c['source'] + ' / ' + c['section'] for c in retrieved]}]\n")
 
-    # Test live query (will fall back to static if Prometheus is unreachable)
-    live = pilot.query_logs(timeframe="15m")
-    print(f"[live data source: {live.get('source')}]")
-    print(f"[metrics series: {len(live.get('metrics') or [])}]")
-    print(f"[log entries: {len(live.get('logs') or [])}]\n")
-
     response = pilot.query(TRIAGE_QUERY)
+    trace = pilot.get_trace()
+    print(f"[tool calls made: {[t['name'] for t in trace.get('tool_calls', [])]}]")
+    print(f"[data source: {trace.get('source')}]\n")
+
     print(f"INCIDENT PILOT:\n{response}")
+    pilot.close()
 
     print("\n" + "=" * 72)
     print("  Triage query completed. Verify the response cites the runbook")

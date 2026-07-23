@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project overview
 
-**incident-pilot** is an AI-powered incident-response copilot for on-call SRE engineers. It uses RAG over runbooks and postmortems; queries live Prometheus metrics and Loki logs (with automatic static fallback); runs structured log analysis (level breakdown, pattern grouping, error cluster detection); and returns cited triage summaries — but it **never executes deploys, rollbacks, or any production-mutating action** without explicit human approval.
+**incident-pilot** is an AI-powered incident-response copilot for on-call SRE engineers. It uses RAG over runbooks and postmortems (always retrieved); lets the LLM itself decide, per query, whether to call one or both of two MCP-backed tools — `query_metrics` (live Prometheus, with automatic static fallback) and `query_logs` (live Loki, returned as a structured analysis — level breakdown, pattern grouping, error clusters, reconstructed journeys — not raw lines); and returns cited triage summaries — but it **never executes deploys, rollbacks, or any production-mutating action** without explicit human approval, and a code-level guard prevents it from even calling a telemetry tool on messages that look like a deploy/rollback/hotfix request.
 
 Tech stack: **Python + LangChain + Groq LLM + ChromaDB + Gradio UI + Docker Compose (Prometheus/Loki/Grafana/FastAPI generator)**.
 
@@ -44,13 +44,30 @@ Builds ChromaDB vector store from runbooks/postmortems. Splits on `##` headers, 
 
 ### `src/incident_pilot.py`
 Core `IncidentPilot` class. Key methods:
-- `retrieve(query)` — RAG search over ChromaDB, returns top-k chunks with source/section
-- `query_logs(timeframe)` — queries Prometheus + Loki (delegates to `query_logs.py`)
-- `_format_live_data(log_result)` — structured summary of metrics + log analysis
-- `query(user_input)` — full pipeline: RAG + live data + LLM → cited triage summary
+- `retrieve(query)` — RAG search over ChromaDB, returns top-k chunks with source/section (always runs)
+- `query(user_input, service=None)` — full pipeline: RAG retrieval, then a bounded tool-calling
+  loop (`model.bind_tools([query_metrics, query_logs]).invoke(...)`) where **the LLM decides**
+  whether/which tool to call, executes real MCP round trips for whatever it asks for, folds the
+  results back in as `ToolMessage`s, then produces a cited answer
+- `_looks_like_action_request(text)` / `MAX_TOOL_ROUNDS` — code-level guardrail backstop: messages
+  matching deploy/rollback/hotfix/config-change verbs never get tools bound at all for that call,
+  so a tool call is impossible (not just prompted-against) on those messages
+- `_detect_contradictions(...)` — only meaningful if `query_metrics` was actually called this turn
+- `get_trace()` — RAG chunks, which tool(s) were called with what args/results, data source
+  (`live`/`static_fallback`/`unavailable`/`not_queried`), for the UI trace panel
+
+### `src/mcp_server/server.py` + `src/mcp_client.py`
+The MCP integration. `mcp_server/server.py` is a standalone `FastMCP` server exposing
+`query_metrics`/`query_logs` as MCP tools — thin wrappers around `query_logs.py`'s existing
+query+fallback functions, condensing Prometheus's raw time-series to latest-value-only
+(`_condense_metrics`) and running log analysis server-side so the model gets a compact,
+structured result instead of a raw dump. `mcp_client.py` is a sync wrapper (background asyncio
+loop + long-lived stdio session) so the rest of the codebase — ChatGroq, Gradio — doesn't need
+to be async-native; `IncidentPilot` spawns this once and reuses the session across every query.
 
 ### `src/query_logs.py`
-Data layer with four data sources (live + fallback for both metrics and logs):
+Data layer with four data sources (live + fallback for both metrics and logs) — used by
+`mcp_server/server.py`, not called directly by `incident_pilot.py` anymore:
 - `query_prometheus()` — GET `localhost:9090/api/v1/query_range`
 - `query_loki()` — GET `localhost:3100/loki/api/v1/query_range`
 - `_load_metrics_fallback()` — reads `synthetic-data/metrics/*.json`
@@ -58,10 +75,13 @@ Data layer with four data sources (live + fallback for both metrics and logs):
 
 Plus log analysis:
 - `analyze_logs()` — extracts levels, groups patterns via `_normalize_message()`, detects error clusters (bursts within 30s)
+- `analyze_traces()` — groups by `trace_id`, reconstructs journeys, finds break points
 - `_extract_level()`, `_extract_message()`, `_normalize_message()`, `_timestamp_diff()`, `_try_parse_timestamp()`
 
 ### `src/app.py`
-Gradio UI. Shows data source badge (🟢 Live / 🟡 Fallback / 🔴 Unavailable). Submits query with cached live data to avoid double-querying Prometheus/Loki.
+Gradio UI. Shows data source badge (🟢 Live / 🟡 Fallback / 🔴 Unavailable / ⚪ Not queried this
+turn). Calls `pilot.query()` once — no pre-fetch — then derives the badge and trace panel
+(including which tool(s) the agent actually called) from `pilot.get_trace()` afterward.
 
 ### `flask-generator/`
 Docker FastAPI app that simulates production incidents in real-time:
@@ -89,13 +109,16 @@ Docker FastAPI app that simulates production incidents in real-time:
 uv run python -m pytest tests/ -v
 
 # Specific suites
-uv run python -m pytest tests/test_query_logs.py -v         # 43 tests
-uv run python -m pytest tests/test_incident_pilot.py -v     # 24 tests
+uv run python -m pytest tests/test_query_logs.py -v         # 49 tests
+uv run python -m pytest tests/test_incident_pilot.py -v     # 27 tests
+uv run python -m pytest tests/test_mcp_server.py -v         # 6 tests
 uv run python -m pytest tests/test_fastapi_generator.py -v  # 64 tests
 ```
 
-`test_query_logs.py` mocks all network calls — no live stack needed.  
-`test_incident_pilot.py` calls real Groq API — `GROQ_API_KEY` must be set.
+`test_query_logs.py` and `test_mcp_server.py` mock all network calls — no live stack needed.
+`test_incident_pilot.py`'s `TestGuardrailBehaviour` calls the real Groq API (with tools bound) —
+`GROQ_API_KEY` must be set; the rest of that file (`TestAgentStructure`, `TestContradictionDetection`)
+mocks `ChatGroq` and `MCPClient`, no network needed.
 
 ## Incident scenarios
 
@@ -125,30 +148,52 @@ Lifecycle durations (accelerated mode, 1s = 1 simulated minute):
 ```
 User query
   │
-  ├─ 1. retrieve() → ChromaDB similarity search → top-3 RAG chunks
+  ├─ 1. retrieve() → ChromaDB similarity search → top-3 RAG chunks (always)
   │
-  ├─ 2. query_logs() → Prometheus + Loki (or static files)
-  │      └─ analyze_logs() → structured summary (levels, patterns, clusters)
+  ├─ 2. Build initial prompt: ## Retrieved context (RAG) + engineer's description
   │
-  ├─ 3. Build prompt:
-  │      ## Retrieved context (RAG)
-  │      ## Live metrics & logs [source: live|static_fallback]
-  │      Engineer's description
+  ├─ 3. Action-request check (code-level, not just prompt-level):
+  │      matches "roll back / deploy / hotfix / restart / ..."?
+  │        yes → model.invoke() with NO tools bound (tool call impossible)
+  │        no  → model.bind_tools([query_metrics, query_logs]).invoke()
   │
-  ├─ 4. LLM invoke() → Groq llama-3.3-70b-versatile → cited response
+  ├─ 4. If the model requested tool(s): execute each via a real MCP round
+  │      trip to mcp_server/server.py (stdio, one long-lived session),
+  │      append ToolMessage(s), invoke again -- repeat up to MAX_TOOL_ROUNDS
   │
-  └─ 5. UI: badge + response displayed
+  ├─ 5. Contradiction check -- only if query_metrics was actually called;
+  │      folds a [Contradiction] flag back in for one more invoke if found
+  │
+  ├─ 6. Final LLM response → Groq llama-3.3-70b-versatile → cited answer
+  │
+  └─ 7. UI: badge (live|static_fallback|unavailable|not_queried) + trace
+         panel (which tool(s) were called, with what args/results) + response
 ```
 
 ## Key architectural constraints
 
-1. **Guardrails are prompt-level** — The system prompt `prompts/system_prompt.md` defines the "no autonomous production actions" rule. This runs before any RAG or tool calls. Guardrails work even if vector store or live stack is unavailable.
+1. **Guardrails are both prompt- and code-level** — `prompts/system_prompt.md` Priority 1 tells
+   the model to refuse deploy/rollback/hotfix requests without calling a tool, but prompting
+   alone isn't reliable enough (observed the model attempt a tool call against this instruction
+   during testing) — so `incident_pilot._looks_like_action_request()` also skips binding tools
+   entirely for matching messages, making a tool call structurally impossible for them, not just
+   discouraged. Guardrails work even if the vector store or MCP server is unavailable.
 
-2. **RAG is pre-computed** — `ingestion.py` chunks and embeds all documents offline. At query time, only the user's query is embedded (~100ms) and searched (~50ms).
+2. **RAG is pre-computed and always-on** — `ingestion.py` chunks and embeds all documents
+   offline. At query time, only the user's query is embedded (~100ms) and searched (~50ms).
+   Unlike the two telemetry tools, RAG retrieval is not agent-decided — it runs on every query.
 
-3. **Log analysis is structured** — `analyze_logs()` runs before the LLM prompt is built, producing a concise structured summary instead of raw log line dumps.
+3. **Telemetry is agent-decided, via MCP** — the LLM itself decides whether/which of
+   `query_metrics`/`query_logs` to call, based on tool docstrings + system-prompt guidance (see
+   `prompts/system_prompt.md`, "Deciding whether to call a telemetry tool"). Log analysis
+   (`analyze_logs()`/`analyze_traces()`) and metrics condensing (`_condense_metrics()`) both
+   happen server-side in `mcp_server/server.py`, so the model receives a structured, compact
+   result — never a raw log/time-series dump.
 
-4. **Data source fallback is automatic** — `query_logs()` tries live Prometheus/Loki first, then falls back to static JSON/JSONL files. The UI badge shows the source.
+4. **Data source fallback is automatic, per tool call** — each MCP tool tries live
+   Prometheus/Loki first, then falls back to static JSON/JSONL files, tagging its result's
+   `source` field accordingly. The UI badge reflects whichever tool(s) were actually called this
+   turn — `not_queried` if the agent judged neither was needed.
 
 5. **The `phase` field in synthetic metrics** (`baseline`/`climbing`/`plateau`/`recovering`) is a dataset-layer annotation only — it is stripped before returning data to the agent so the agent doesn't see ground-truth labels it should be inferring.
 
