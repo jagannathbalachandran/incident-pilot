@@ -1,5 +1,0 @@
-{"timestamp": "2026-07-22T09:40:00Z", "service": "listing-service", "endpoint": "/listings", "level": "INFO", "message": "listings returned", "trace_id": "tr-a1c9e02f31", "request_id": "req-5f0e2c9a41"}
-{"timestamp": "2026-07-22T09:41:30Z", "service": "listing-service", "endpoint": "/listings", "level": "INFO", "message": "listings returned", "trace_id": "tr-77bb410ce2", "request_id": "req-0c3a99de52"}
-{"timestamp": "2026-07-22T09:42:50Z", "service": "listing-service", "endpoint": "/listings", "level": "INFO", "message": "listings returned", "trace_id": "tr-2f0d81ab5c", "request_id": "req-b81f420ac3"}
-{"timestamp": "2026-07-22T09:44:10Z", "service": "listing-service", "endpoint": "/listings", "level": "WARN", "message": "request exceeded p99 SLO threshold (1500ms)", "trace_id": "tr-9c02fe1a80", "request_id": "req-77e0a4c9d1"}
-{"timestamp": "2026-07-22T09:45:20Z", "service": "listing-service", "endpoint": "/listings", "level": "INFO", "message": "listings returned", "trace_id": "tr-9c02fe1a80", "request_id": "req-3a91cd08f2"}

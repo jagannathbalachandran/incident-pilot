@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project overview
 
-**incident-pilot** is an AI-powered incident-response copilot for on-call SRE engineers. It uses RAG over runbooks and postmortems (always retrieved); lets the LLM itself decide, per query, whether to call one or both of two MCP-backed tools — `query_metrics` (live Prometheus, with automatic static fallback) and `query_logs` (live Loki, returned as a structured analysis — level breakdown, pattern grouping, error clusters, reconstructed journeys — not raw lines); and returns cited triage summaries — but it **never executes deploys, rollbacks, or any production-mutating action** without explicit human approval, and a code-level guard prevents it from even calling a telemetry tool on messages that look like a deploy/rollback/hotfix request.
+**incident-pilot** is an AI-powered incident-response copilot for on-call SRE engineers. It uses RAG over runbooks and postmortems (always retrieved); lets the LLM itself decide, per query, whether to call one or both of two MCP-backed tools — `query_metrics` (live Prometheus) and `query_logs` (live Loki, returned as a structured analysis — level breakdown, pattern grouping, error clusters, reconstructed journeys — not raw lines); and returns cited triage summaries — but it **never executes deploys, rollbacks, or any production-mutating action** without explicit human approval, and a code-level guard prevents it from even calling a telemetry tool on messages that look like a deploy/rollback/hotfix request. There is no fallback data source: if Prometheus/Loki can't be reached, the tool reports `source: "unavailable"` and the agent must tell the engineer plainly rather than substituting stale data.
 
 Tech stack: **Python + LangChain + Groq LLM + ChromaDB + Gradio UI + Docker Compose (Prometheus/Loki/Grafana/FastAPI generator)**.
 
@@ -54,24 +54,24 @@ Core `IncidentPilot` class. Key methods:
   so a tool call is impossible (not just prompted-against) on those messages
 - `_detect_contradictions(...)` — only meaningful if `query_metrics` was actually called this turn
 - `get_trace()` — RAG chunks, which tool(s) were called with what args/results, data source
-  (`live`/`static_fallback`/`unavailable`/`not_queried`), for the UI trace panel
+  (`live`/`unavailable`/`not_queried`), for the UI trace panel
 
 ### `src/mcp_server/server.py` + `src/mcp_client.py`
 The MCP integration. `mcp_server/server.py` is a standalone `FastMCP` server exposing
 `query_metrics`/`query_logs` as MCP tools — thin wrappers around `query_logs.py`'s existing
-query+fallback functions, condensing Prometheus's raw time-series to latest-value-only
+query functions, condensing Prometheus's raw time-series to latest-value-only
 (`_condense_metrics`) and running log analysis server-side so the model gets a compact,
-structured result instead of a raw dump. `mcp_client.py` is a sync wrapper (background asyncio
+structured result instead of a raw dump. If Prometheus/Loki is unreachable, the tool returns
+`source: "unavailable"` with no data and a `message` explaining the service couldn't be
+reached — there is no fallback. `mcp_client.py` is a sync wrapper (background asyncio
 loop + long-lived stdio session) so the rest of the codebase — ChatGroq, Gradio — doesn't need
 to be async-native; `IncidentPilot` spawns this once and reuses the session across every query.
 
 ### `src/query_logs.py`
-Data layer with four data sources (live + fallback for both metrics and logs) — used by
-`mcp_server/server.py`, not called directly by `incident_pilot.py` anymore:
-- `query_prometheus()` — GET `localhost:9090/api/v1/query_range`
-- `query_loki()` — GET `localhost:3100/loki/api/v1/query_range`
-- `_load_metrics_fallback()` — reads `synthetic-data/metrics/*.json`
-- `_load_logs_fallback()` — reads `synthetic-data/logs/*.jsonl`
+Data layer for live metrics/logs — used by `mcp_server/server.py`, not called directly by
+`incident_pilot.py` anymore:
+- `query_prometheus()` — GET `localhost:9090/api/v1/query_range`, returns `None` if unreachable
+- `query_loki()` — GET `localhost:3100/loki/api/v1/query_range`, returns `None` if unreachable
 
 Plus log analysis:
 - `analyze_logs()` — extracts levels, groups patterns via `_normalize_message()`, detects error clusters (bursts within 30s)
@@ -79,7 +79,7 @@ Plus log analysis:
 - `_extract_level()`, `_extract_message()`, `_normalize_message()`, `_timestamp_diff()`, `_try_parse_timestamp()`
 
 ### `src/app.py`
-Gradio UI. Shows data source badge (🟢 Live / 🟡 Fallback / 🔴 Unavailable / ⚪ Not queried this
+Gradio UI. Shows data source badge (🟢 Live / 🔴 Unavailable / ⚪ Not queried this
 turn). Calls `pilot.query()` once — no pre-fetch — then derives the badge and trace panel
 (including which tool(s) the agent actually called) from `pilot.get_trace()` afterward.
 
@@ -109,7 +109,7 @@ Docker FastAPI app that simulates production incidents in real-time:
 uv run python -m pytest tests/ -v
 
 # Specific suites
-uv run python -m pytest tests/test_query_logs.py -v         # 49 tests
+uv run python -m pytest tests/test_query_logs.py -v         # 41 tests
 uv run python -m pytest tests/test_incident_pilot.py -v     # 27 tests
 uv run python -m pytest tests/test_mcp_server.py -v         # 6 tests
 uv run python -m pytest tests/test_fastapi_generator.py -v  # 64 tests
@@ -164,9 +164,9 @@ User query
   ├─ 5. Contradiction check -- only if query_metrics was actually called;
   │      folds a [Contradiction] flag back in for one more invoke if found
   │
-  ├─ 6. Final LLM response → Groq llama-3.3-70b-versatile → cited answer
+  ├─ 6. Final LLM response → Groq (GROQ_MODEL, default llama-3.1-8b-instant) → cited answer
   │
-  └─ 7. UI: badge (live|static_fallback|unavailable|not_queried) + trace
+  └─ 7. UI: badge (live|unavailable|not_queried) + trace
          panel (which tool(s) were called, with what args/results) + response
 ```
 
@@ -190,10 +190,12 @@ User query
    happen server-side in `mcp_server/server.py`, so the model receives a structured, compact
    result — never a raw log/time-series dump.
 
-4. **Data source fallback is automatic, per tool call** — each MCP tool tries live
-   Prometheus/Loki first, then falls back to static JSON/JSONL files, tagging its result's
-   `source` field accordingly. The UI badge reflects whichever tool(s) were actually called this
-   turn — `not_queried` if the agent judged neither was needed.
+4. **There is no fallback data source** — each MCP tool call talks to live Prometheus/Loki only;
+   if the live endpoint is unreachable, the tool returns `source: "unavailable"` with no data
+   (and a `message` explaining why) instead of substituting stale synthetic data. The system
+   prompt requires the agent to tell the engineer plainly when this happens rather than present
+   anything as a live-data diagnosis. The UI badge reflects whichever tool(s) were actually
+   called this turn — `not_queried` if the agent judged neither was needed.
 
 5. **The `phase` field in synthetic metrics** (`baseline`/`climbing`/`plateau`/`recovering`) is a dataset-layer annotation only — it is stripped before returning data to the agent so the agent doesn't see ground-truth labels it should be inferring.
 
@@ -203,8 +205,6 @@ User query
 |---|---|
 | `synthetic-data/runbooks/` | Service runbooks for RAG indexing |
 | `synthetic-data/postmorterms/` | Past-incident postmortems for RAG indexing |
-| `synthetic-data/metrics/` | JSON time-series metrics for fallback |
-| `synthetic-data/logs/` | JSONL application logs for fallback |
 | `synthetic-data/vectorstore/` | ChromaDB (built by `ingestion.py`, not committed) |
 | `flask-generator/` | Docker FastAPI incident simulator |
 | `docs/` | Generation prompts and team context |

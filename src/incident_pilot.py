@@ -73,10 +73,10 @@ def _build_tools(mcp_client: MCPClient) -> list[StructuredTool]:
 
     def query_metrics(service: Optional[str] = None, timeframe: str = "15m") -> dict:
         """Query live Prometheus metrics: p99 latency, error rate, active
-        connections, and cache hit ratio. Falls back to static synthetic
-        data automatically if Prometheus is unreachable; the returned
-        ``source`` field says which happened ("live" / "static_fallback" /
-        "unavailable").
+        connections, and cache hit ratio. If Prometheus is unreachable,
+        returns ``source: "unavailable"`` with no data -- report this to
+        the engineer as "unable to reach Prometheus" rather than
+        substituting stale data.
 
         Args:
             service: Service name to scope to (e.g. "checkout-api"). Omit
@@ -92,8 +92,9 @@ def _build_tools(mcp_client: MCPClient) -> list[StructuredTool]:
         """Query application logs and return a structured analysis: log
         level breakdown, top recurring message patterns, error clusters,
         and reconstructed user-journey traces (login -> ... -> logout).
-        Falls back to static synthetic data automatically if Loki is
-        unreachable; the returned ``source`` field says which happened.
+        If Loki is unreachable, returns ``source: "unavailable"`` with no
+        data -- report this to the engineer as "unable to reach Loki"
+        rather than substituting stale data.
 
         Args:
             service: Service name to scope to. Omit to query across every
@@ -151,10 +152,15 @@ class IncidentPilot:
                 "Export it in your shell or add it to a .env file at the repo root."
             )
 
-        logger.info("Initialising IncidentPilot with model=llama-3.3-70b-versatile")
+        # Model is configurable via GROQ_MODEL so you can flip between Groq
+        # models (each has its own separate per-day token budget) without a
+        # code change -- e.g. drop to llama-3.1-8b-instant when the 70b
+        # model's daily quota is exhausted.
+        model_name = os.environ.get("GROQ_MODEL", "llama-3.1-8b-instant")
+        logger.info("Initialising IncidentPilot with model=%s", model_name)
         self.system_prompt = SYSTEM_PROMPT_PATH.read_text()
         self.model = ChatGroq(
-            model="llama-3.3-70b-versatile",
+            model=model_name,
             api_key=api_key,
         )
         self.vectorstore = self._load_vectorstore()
@@ -198,8 +204,13 @@ class IncidentPilot:
             embedding_function=embeddings,
         )
 
-    def retrieve(self, user_input: str, k: int = 3) -> list[dict]:
-        """Return top-k grounding chunks as ``{source, section, content}`` dicts."""
+    def retrieve(self, user_input: str, k: int = 2) -> list[dict]:
+        """Return top-k grounding chunks as ``{source, section, content}`` dicts.
+
+        k defaults to 2 (not 3) to keep the RAG block folded into every LLM
+        invoke small -- on Groq's tight free-tier per-minute token budget the
+        3rd chunk's ~200 tokens, re-sent across 2-3 invokes per query, is not
+        worth its marginal grounding value."""
         if self.vectorstore is None:
             logger.warning("retrieve() called but vectorstore is unavailable")
             return []
@@ -405,8 +416,10 @@ class IncidentPilot:
           - ``tool_calls``: list of ``{name, args, result}`` for every MCP
             tool call the model made this turn (empty list if none)
           - ``augmented_input``: the initial prompt sent to the LLM
-          - ``source``: "live" | "static_fallback" | "unavailable" | "not_queried"
-            ("not_queried" means the model answered without calling either tool)
+          - ``source``: "live" | "unavailable" | "not_queried"
+            ("not_queried" means the model answered without calling either
+            tool; "unavailable" means a tool was called but Prometheus/Loki
+            could not be reached)
         """
         return (self._last_trace or {}).copy()
 
@@ -417,11 +430,7 @@ class IncidentPilot:
         if metrics_result is None and logs_result is None:
             return "not_queried"
         sources = [r.get("source") for r in (metrics_result, logs_result) if r is not None]
-        if "live" in sources:
-            return "live"
-        if "static_fallback" in sources:
-            return "static_fallback"
-        return "unavailable"
+        return "live" if "live" in sources else "unavailable"
 
     # ------------------------------------------------------------------
     # Main query

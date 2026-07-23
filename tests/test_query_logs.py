@@ -1,14 +1,12 @@
 """
-Tests for the query_logs module (Prometheus / Loki queries with static fallback).
+Tests for the query_logs module (Prometheus / Loki queries, no fallback).
 
 Covers:
   - parse_timeframe          : relative durations, absolute ranges, fallback
   - _parse_iso               : valid/invalid ISO-8601 parsing
   - query_prometheus         : live query, connection error, timeout
   - query_loki               : live query, connection error, timeout
-  - _load_metrics_fallback   : file read, missing file, bad JSON
-  - _load_logs_fallback      : file read, missing file
-  - query_logs               : combined live / fallback / unavailable
+  - query_logs               : combined live / unavailable
 """
 
 import json
@@ -68,37 +66,6 @@ def _fake_loki_response(entry_count: int = 3) -> dict:
             ]
         },
     }
-
-
-def _fake_metrics_json_content() -> str:
-    """Return a JSON string like the static metrics files."""
-    return json.dumps({
-        "series": [
-            {
-                "timestamp": "2026-07-16T12:00:00Z",
-                "p99_latency_ms": 380.0,
-                "error_rate_pct": 0.05,
-                "active_connections": 118,
-                "cache_hit_ratio": 0.95,
-                "max_connections": 200,
-            }
-        ]
-    })
-
-
-def _fake_logs_jsonl_content(line_count: int = 3) -> str:
-    """Return a JSONL string like the static log files."""
-    lines = []
-    for i in range(line_count):
-        lines.append(
-            json.dumps({
-                "timestamp": f"2026-07-16T12:0{i}:00Z",
-                "level": "INFO",
-                "message": f"test log line {i}",
-                "service": "checkout-api",
-            })
-        )
-    return "\n".join(lines)
 
 
 # ===================================================================
@@ -249,104 +216,6 @@ class TestQueryLoki(unittest.TestCase):
 
 
 # ===================================================================
-# _load_metrics_fallback
-# ===================================================================
-
-class TestLoadMetricsFallback(unittest.TestCase):
-    """_load_metrics_fallback reads from static JSON files."""
-
-    @patch("query_logs.DATA_DIR", Path("/nonexistent"))
-    def test_missing_metrics_dir_returns_none(self):
-        self.assertIsNone(ql._load_metrics_fallback(service="checkout-api"))
-
-    @patch("pathlib.Path.exists", return_value=False)
-    @patch("pathlib.Path.is_dir", return_value=True)
-    @patch("query_logs.DATA_DIR")
-    def test_no_matching_files_returns_none(self, mock_dir, mock_is_dir, mock_exists):
-        self.assertIsNone(ql._load_metrics_fallback(service="checkout-api"))
-
-    @patch("pathlib.Path.is_dir", return_value=True)
-    @patch("builtins.open", side_effect=OSError("permission denied"))
-    @patch("pathlib.Path.exists", return_value=True)
-    @patch("query_logs.DATA_DIR")
-    def test_oserror_returns_none(self, mock_dir, mock_exists, mock_open, mock_is_dir):
-        self.assertIsNone(ql._load_metrics_fallback(service="checkout-api"))
-
-    @patch("pathlib.Path.is_dir", return_value=True)
-    @patch("builtins.open", return_value=MagicMock(
-        __enter__=MagicMock(return_value=MagicMock(
-            read=MagicMock(return_value=_fake_metrics_json_content())
-        ))
-    ))
-    @patch("pathlib.Path.exists", return_value=True)
-    @patch("query_logs.DATA_DIR")
-    def test_successful_read_returns_five_series_for_one_service(
-        self, mock_dir, mock_exists, mock_open, mock_is_dir
-    ):
-        result = ql._load_metrics_fallback(service="checkout-api")
-        self.assertIsNotNone(result)
-        self.assertEqual(len(result), 5)
-        names = {s["metric"]["__name__"] for s in result}
-        self.assertIn("svc_p99_latency_ms", names)
-        self.assertIn("svc_error_rate_pct", names)
-        self.assertIn("svc_active_connections", names)
-        self.assertIn("svc_cache_hit_ratio", names)
-        self.assertIn("svc_max_connections", names)
-        for s in result:
-            self.assertEqual(s["metric"]["service"], "checkout-api")
-
-    @patch("pathlib.Path.is_dir", return_value=True)
-    @patch("builtins.open", return_value=MagicMock(
-        __enter__=MagicMock(return_value=MagicMock(
-            read=MagicMock(return_value=_fake_metrics_json_content())
-        ))
-    ))
-    @patch("pathlib.Path.exists", return_value=True)
-    @patch("query_logs.DATA_DIR")
-    def test_no_service_merges_every_service(
-        self, mock_dir, mock_exists, mock_open, mock_is_dir
-    ):
-        """service=None (the default) fans out across every service's fallback file."""
-        result = ql._load_metrics_fallback(service=None)
-        self.assertIsNotNone(result)
-        self.assertEqual(len(result), 5 * len(ql.ALL_SERVICES))
-
-
-# ===================================================================
-# _load_logs_fallback
-# ===================================================================
-
-class TestLoadLogsFallback(unittest.TestCase):
-    """_load_logs_fallback reads from static JSONL files."""
-
-    @patch("query_logs.DATA_DIR", Path("/nonexistent"))
-    def test_missing_logs_dir_returns_none(self):
-        self.assertIsNone(ql._load_logs_fallback(service="checkout-api"))
-
-    @patch("pathlib.Path.is_dir", return_value=True)
-    @patch("builtins.open", return_value=MagicMock(
-        __enter__=MagicMock(return_value=MagicMock(
-            __iter__=MagicMock(return_value=iter(
-                _fake_logs_jsonl_content(3).splitlines(keepends=True)
-            ))
-        ))
-    ))
-    @patch("pathlib.Path.exists", return_value=True)
-    @patch("query_logs.DATA_DIR")
-    def test_successful_read_returns_entries(
-        self, mock_dir, mock_exists, mock_open, mock_is_dir
-    ):
-        result = ql._load_logs_fallback(service="checkout-api")
-        self.assertIsNotNone(result)
-        self.assertEqual(len(result), 3)
-        for entry in result:
-            self.assertIn("timestamp", entry)
-            self.assertIn("line", entry)
-            self.assertIn("labels", entry)
-            self.assertEqual(entry["labels"]["service"], "checkout-api")
-
-
-# ===================================================================
 # query_logs (combined)
 # ===================================================================
 
@@ -366,22 +235,7 @@ class TestQueryLogsCombined(unittest.TestCase):
 
     @patch("query_logs.query_loki", return_value=None)
     @patch("query_logs.query_prometheus", return_value=None)
-    @patch("query_logs._load_metrics_fallback")
-    @patch("query_logs._load_logs_fallback")
-    def test_both_fallback(self, mock_logs_fb, mock_metrics_fb, mock_prom, mock_loki):
-        mock_metrics_fb.return_value = [{"metric": {"__name__": "test"}, "values": []}]
-        mock_logs_fb.return_value = [{"timestamp": "0", "line": "test", "labels": {}}]
-
-        result = ql.query_logs()
-        self.assertEqual(result["source"], "static_fallback")
-        self.assertIsNotNone(result["metrics"])
-        self.assertIsNotNone(result["logs"])
-
-    @patch("query_logs.query_loki", return_value=None)
-    @patch("query_logs.query_prometheus", return_value=None)
-    @patch("query_logs._load_metrics_fallback", return_value=None)
-    @patch("query_logs._load_logs_fallback", return_value=None)
-    def test_both_unavailable(self, mock_logs_fb, mock_metrics_fb, mock_prom, mock_loki):
+    def test_both_unavailable(self, mock_prom, mock_loki):
         result = ql.query_logs()
         self.assertEqual(result["source"], "unavailable")
         self.assertIsNone(result["metrics"])
@@ -389,36 +243,29 @@ class TestQueryLogsCombined(unittest.TestCase):
 
     @patch("query_logs.query_loki", return_value=None)
     @patch("query_logs.query_prometheus")
-    @patch("query_logs._load_logs_fallback")
-    def test_metrics_live_logs_fallback_sets_static(self, mock_logs_fb, mock_prom, mock_loki):
-        """When metrics are live but logs fallback, source becomes static_fallback."""
+    def test_metrics_live_logs_unreachable_still_counts_as_live(self, mock_prom, mock_loki):
+        """If either endpoint is reachable, the overall source is 'live' --
+        only when both are unreachable does it become 'unavailable'."""
         mock_prom.return_value = [{"metric": {"__name__": "test"}, "values": []}]
-        mock_logs_fb.return_value = [{"timestamp": "0", "line": "test", "labels": {}}]
-
-        result = ql.query_logs()
-        # Current behaviour: if any data source falls back, the overall
-        # source label becomes "static_fallback".
-        self.assertEqual(result["source"], "static_fallback")
-        self.assertIsNotNone(result["metrics"])
-        self.assertIsNotNone(result["logs"])
-
-    @patch("query_logs.query_loki")
-    @patch("query_logs.query_prometheus", return_value=None)
-    @patch("query_logs._load_metrics_fallback")
-    def test_metrics_fallback_logs_live(self, mock_metrics_fb, mock_loki, mock_prom):
-        mock_metrics_fb.return_value = [{"metric": {"__name__": "test"}, "values": []}]
-        mock_loki.return_value = [{"timestamp": "0", "line": "test", "labels": {}}]
 
         result = ql.query_logs()
         self.assertEqual(result["source"], "live")
         self.assertIsNotNone(result["metrics"])
+        self.assertIsNone(result["logs"])
+
+    @patch("query_logs.query_loki")
+    @patch("query_logs.query_prometheus", return_value=None)
+    def test_metrics_unreachable_logs_live(self, mock_prom, mock_loki):
+        mock_loki.return_value = [{"timestamp": "0", "line": "test", "labels": {}}]
+
+        result = ql.query_logs()
+        self.assertEqual(result["source"], "live")
+        self.assertIsNone(result["metrics"])
         self.assertIsNotNone(result["logs"])
 
     @patch("query_logs.query_loki", return_value=None)
     @patch("query_logs.query_prometheus", return_value=None)
-    @patch("query_logs._load_metrics_fallback", return_value=None)
-    @patch("query_logs._load_logs_fallback", return_value=None)
-    def test_env_url_override(self, mock_logs_fb, mock_metrics_fb, mock_prom, mock_loki):
+    def test_env_url_override(self, mock_prom, mock_loki):
         result = ql.query_logs(service="checkout-api", timeframe="1h")
         self.assertEqual(result["source"], "unavailable")
 

@@ -184,9 +184,9 @@ Live and historical performance data used for anomaly detection and triage conte
 | Aspect | Detail |
 |---|---|
 | **Examples** | `checkout_p99_latency_ms`, `checkout_error_rate_pct`, `checkout_active_connections`, `checkout_cache_hit_ratio`, `checkout_max_connections` |
-| **Source** | Prometheus `query_range` API (live) → falls back to `synthetic-data/metrics/*.json` |
+| **Source** | Prometheus `query_range` API (live only — no fallback; reports `source: "unavailable"` if unreachable) |
 | **Format** | Prometheus response JSON: `{status, data: {result: [{metric, values}]}}` |
-| **Pipeline** | `query_prometheus()` → `_load_metrics_fallback()` → `_format_live_data()` extracts latest value per series |
+| **Pipeline** | `query_prometheus()` → `_condense_metrics()` extracts latest value per series |
 | **Volume** | ~5 metric series per service, sampled every 60s (~720 data points / hour / service) |
 | **RBAC sensitivity** | **LOW** — metrics are typically open across SRE teams |
 | **Freshness requirement** | Near real-time (60s scrape interval) for L2 proactive monitoring |
@@ -205,9 +205,9 @@ Structured and unstructured log entries for debugging incident context.
 | Aspect | Detail |
 |---|---|
 | **Examples** | `2026-05-14T13:50:00Z ERROR could not obtain connection` |
-| **Source** | Loki `query_range` API (live) → falls back to `synthetic-data/logs/*.jsonl` |
+| **Source** | Loki `query_range` API (live only — no fallback; reports `source: "unavailable"` if unreachable) |
 | **Format** | Loki response JSON → normalized to `{timestamp, line, labels}` dicts |
-| **Pipeline** | `query_loki()` → `_load_logs_fallback()` → `analyze_logs()` → structured summary (level breakdown, top patterns, error clusters) |
+| **Pipeline** | `query_loki()` → `analyze_logs()` → structured summary (level breakdown, top patterns, error clusters) |
 | **Analysis** | `_extract_level()`, `_extract_message()`, `_normalize_message()` (replaces variables with `*`), cluster detection within 30s windows |
 | **Volume** | ~50–200 lines per query window (limited by `limit=100` in Loki query) |
 | **RBAC sensitivity** | **MEDIUM** — logs may contain PII, customer IDs, or stack traces revealing vulnerabilities |

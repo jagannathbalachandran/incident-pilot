@@ -1,6 +1,7 @@
 """
 Tests for mcp_server/server.py -- the MCP tool handlers that wrap
-query_logs.py's Prometheus/Loki query + fallback functions.
+query_logs.py's Prometheus/Loki query functions. There is no fallback: if
+the live endpoint is unreachable, the tool reports source="unavailable".
 
 These call the tool functions directly (the ``@mcp.tool()`` decorator
 returns the original function unchanged, it only registers it), so no
@@ -37,25 +38,12 @@ class TestQueryMetrics(unittest.TestCase):
             {"name": "svc_p99_latency_ms", "service": "checkout-api", "endpoint": "", "value": "1486.2"},
         ])
 
-    def test_falls_back_to_static(self):
-        fake_fallback = [
-            {"metric": {"__name__": "svc_p99_latency_ms", "service": "checkout-api"},
-             "values": [["1000", "400"]]},
-        ]
-        with patch("mcp_server.server.query_prometheus", return_value=None), \
-             patch("mcp_server.server._load_metrics_fallback", return_value=fake_fallback):
-            result = server.query_metrics()
-        self.assertEqual(result["source"], "static_fallback")
-        self.assertEqual(result["metrics"], [
-            {"name": "svc_p99_latency_ms", "service": "checkout-api", "endpoint": "", "value": "400"},
-        ])
-
-    def test_unavailable_when_both_fail(self):
-        with patch("mcp_server.server.query_prometheus", return_value=None), \
-             patch("mcp_server.server._load_metrics_fallback", return_value=None):
+    def test_unavailable_when_prometheus_unreachable(self):
+        with patch("mcp_server.server.query_prometheus", return_value=None):
             result = server.query_metrics()
         self.assertEqual(result["source"], "unavailable")
         self.assertEqual(result["metrics"], [])
+        self.assertIn("message", result)
 
 
 class TestQueryLogs(unittest.TestCase):
@@ -72,21 +60,13 @@ class TestQueryLogs(unittest.TestCase):
         # Raw log lines must not leak out -- only the structured analysis.
         self.assertNotIn("logs", result)
 
-    def test_falls_back_to_static(self):
-        entries = [_log_entry('{"level": "INFO", "message": "ok"}')]
-        with patch("mcp_server.server.query_loki", return_value=None), \
-             patch("mcp_server.server._load_logs_fallback", return_value=entries):
-            result = server.query_logs()
-        self.assertEqual(result["source"], "static_fallback")
-        self.assertEqual(result["log_analysis"]["total_entries"], 1)
-
-    def test_unavailable_when_both_fail(self):
-        with patch("mcp_server.server.query_loki", return_value=None), \
-             patch("mcp_server.server._load_logs_fallback", return_value=None):
+    def test_unavailable_when_loki_unreachable(self):
+        with patch("mcp_server.server.query_loki", return_value=None):
             result = server.query_logs()
         self.assertEqual(result["source"], "unavailable")
         self.assertEqual(result["log_analysis"]["total_entries"], 0)
         self.assertEqual(result["trace_summary"]["total_traces"], 0)
+        self.assertIn("message", result)
 
 
 if __name__ == "__main__":

@@ -2,9 +2,10 @@
 mcp_server/server.py
 
 MCP server exposing IncidentPilot's telemetry tools: ``query_metrics`` and
-``query_logs``. Wraps the existing Prometheus/Loki query + fallback logic in
+``query_logs``. Wraps the existing Prometheus/Loki query logic in
 ``query_logs.py`` unchanged -- this module only adds the MCP transport, it
-has no telemetry logic of its own.
+has no telemetry logic of its own. If Prometheus/Loki can't be reached, the
+tool reports ``source: "unavailable"`` rather than substituting stale data.
 
 Run standalone (mostly for manual testing):
     cd src && python -m mcp_server.server
@@ -19,9 +20,7 @@ from mcp.server.fastmcp import FastMCP
 
 from query_logs import (
     query_prometheus,
-    _load_metrics_fallback,
     query_loki,
-    _load_logs_fallback,
     analyze_logs,
     analyze_traces,
 )
@@ -59,10 +58,10 @@ def query_metrics(service: Optional[str] = None, timeframe: str = "15m") -> dict
     connections, and cache hit ratio. Returns each metric's latest value
     (not a full time-series history).
 
-    Falls back automatically to static synthetic data if Prometheus is
-    unreachable -- the ``source`` field in the result tells you which
-    happened ("live" or "static_fallback"), or "unavailable" if neither
-    worked.
+    If Prometheus is unreachable, returns ``source: "unavailable"`` and an
+    empty metrics list -- there is no fallback, so report this to the
+    engineer as "unable to reach Prometheus" rather than presenting a
+    diagnosis as if it were current.
 
     Args:
         service: Service name to scope to (e.g. "checkout-api"). Omit to
@@ -71,11 +70,10 @@ def query_metrics(service: Optional[str] = None, timeframe: str = "15m") -> dict
             "start_iso/end_iso" range. Defaults to the last 15 minutes.
     """
     data = query_prometheus(service, timeframe)
-    source = "live"
     if data is None:
-        data = _load_metrics_fallback(service)
-        source = "static_fallback" if data is not None else "unavailable"
-    return {"metrics": _condense_metrics(data or []), "source": source}
+        return {"metrics": [], "source": "unavailable",
+                "message": "Unable to reach Prometheus -- live metrics are not available."}
+    return {"metrics": _condense_metrics(data), "source": "live"}
 
 
 @mcp.tool()
@@ -85,8 +83,10 @@ def query_logs(service: Optional[str] = None, timeframe: str = "15m") -> dict:
     reconstructed user-journey traces (login -> ... -> logout). Returns
     analysis, not raw log lines.
 
-    Falls back automatically to static synthetic data if Loki is
-    unreachable -- the ``source`` field tells you which happened.
+    If Loki is unreachable, returns ``source: "unavailable"`` with an empty
+    analysis -- there is no fallback, so report this to the engineer as
+    "unable to reach Loki" rather than presenting a diagnosis as if it were
+    current.
 
     Args:
         service: Service name to scope to. Omit to query across every
@@ -96,13 +96,15 @@ def query_logs(service: Optional[str] = None, timeframe: str = "15m") -> dict:
             "start_iso/end_iso" range. Defaults to the last 15 minutes.
     """
     entries = query_loki(service, timeframe)
-    source = "live"
     if entries is None:
-        entries = _load_logs_fallback(service)
-        source = "static_fallback" if entries is not None else "unavailable"
-    entries = entries or []
+        return {
+            "source": "unavailable",
+            "message": "Unable to reach Loki -- live logs are not available.",
+            "log_analysis": analyze_logs([]),
+            "trace_summary": analyze_traces([]),
+        }
     return {
-        "source": source,
+        "source": "live",
         "log_analysis": analyze_logs(entries),
         "trace_summary": analyze_traces(entries),
     }

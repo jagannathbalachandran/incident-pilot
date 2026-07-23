@@ -302,10 +302,8 @@ def _format_trace(trace: dict) -> str:
     source = trace.get("source", "unavailable")
     if source == "live":
         source_badge = "🟢 **Live (Prometheus + Loki)**"
-    elif source == "static_fallback":
-        source_badge = "🟡 **Static files (fallback)**"
     else:
-        source_badge = "🔴 **Unavailable**"
+        source_badge = "🔴 **Unavailable — unable to reach Prometheus/Loki**"
     parts.append(f"**Data source:** {source_badge}")
 
     # --- Tool calls (agent-decided) ---
@@ -427,14 +425,11 @@ def triage(incident_description: str, service: str = "(all services)"):
     if live_source == "live":
         badge = "🟢 **Data source: Live (Prometheus + Loki)**\n\n"
         logger.debug("triage badge: 🟢 Live")
-    elif live_source == "static_fallback":
-        badge = "🟡 **Data source: Static files (fallback)**\n\n"
-        logger.debug("triage badge: 🟡 Static fallback")
     elif live_source == "not_queried":
         badge = "⚪ **Data source: Not queried — the agent answered without live telemetry**\n\n"
         logger.debug("triage badge: ⚪ Not queried")
     else:
-        badge = "🔴 **Data source: Unavailable**\n\n"
+        badge = "🔴 **Data source: Unavailable — unable to reach Prometheus/Loki**\n\n"
         logger.debug("triage badge: 🔴 Unavailable")
 
     # Build the trace panel

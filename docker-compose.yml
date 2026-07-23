@@ -130,11 +130,18 @@ services:
     ports:
       - "7860:7860"
     environment:
-      # Point to flask-generator's internal Docker hostname
+      # Point to flask-generator's/prometheus's/loki's internal Docker hostnames --
+      # query_logs.py defaults to localhost, which inside this container means
+      # itself, not the sibling containers on the `monitoring` network.
       - FLASK_API_URL=http://flask-generator:5000
+      - PROMETHEUS_URL=http://prometheus:9090
+      - LOKI_URL=http://loki:3100
       - TOKENIZERS_PARALLELISM=false
       # Required for LLM features — set GROQ_API_KEY in .env or shell env
       - GROQ_API_KEY=${GROQ_API_KEY:-}
+      # Groq model — each model has its own per-day token budget, so switch
+      # here (e.g. llama-3.3-70b-versatile) when one model's quota is spent.
+      - GROQ_MODEL=${GROQ_MODEL:-llama-3.3-70b-versatile}
     volumes:
       # Mount the vector store from host so it persists across container restarts
       # Run 'uv run python src/ingestion.py' first if directory is empty

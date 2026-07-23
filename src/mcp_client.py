@@ -15,6 +15,7 @@ across every query.
 import asyncio
 import json
 import logging
+import os
 import sys
 import threading
 from pathlib import Path
@@ -70,10 +71,16 @@ class MCPClient:
             self._loop.close()
 
     async def _serve(self) -> None:
+        # Forward the full parent environment to the server subprocess.
+        # StdioServerParameters(env=None) does NOT inherit the parent env --
+        # the MCP SDK's get_default_environment() passes only a scrubbed
+        # allowlist (HOME, PATH), which would drop PROMETHEUS_URL / LOKI_URL /
+        # GROQ_API_KEY and silently send every telemetry query to localhost.
         params = StdioServerParameters(
             command=sys.executable,
             args=["-m", "mcp_server.server"],
             cwd=str(SRC_DIR),
+            env=dict(os.environ),
         )
         try:
             async with stdio_client(params) as (read, write):

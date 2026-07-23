@@ -1,9 +1,10 @@
 """
 query_logs.py
 
-Tool for querying live metrics and logs from Prometheus and Loki,
-with automatic fallback to static JSON/JSONL files when the live
-stack is not running.
+Tool for querying live metrics and logs from Prometheus and Loki. If either
+service is unreachable, the query returns with ``source: "unavailable"``
+rather than substituting stale data -- callers must be told plainly that
+live telemetry could not be reached.
 
 The generator now simulates several services (auth-service,
 listing-service, checkout-api, payment-service, ...); passing
@@ -26,7 +27,6 @@ import os
 import re
 from collections import Counter, defaultdict
 from datetime import datetime, timedelta, timezone
-from pathlib import Path
 from typing import Optional
 
 import requests
@@ -40,14 +40,19 @@ logger = logging.getLogger(__name__)
 PROMETHEUS_URL = os.getenv("PROMETHEUS_URL", "http://localhost:9090")
 LOKI_URL = os.getenv("LOKI_URL", "http://localhost:3100")
 
-DATA_DIR = Path(__file__).parent.parent / "synthetic-data"
-
-# Every service the generator simulates -- used only to fan the static
-# fallback loaders out across per-service files when no single service is
-# requested. Kept as a local, display/fallback-only list rather than an
-# import from flask-generator/topology.py, since this module never depends
-# on the generator's internals (it only talks to Prometheus/Loki over HTTP).
-ALL_SERVICES = ("auth-service", "listing-service", "checkout-api", "payment-service")
+# The exact metrics a triage needs. A greedy ``svc_.*`` match would also pull
+# in Prometheus histogram/counter internals (``svc_*_bucket`` alone is dozens
+# of per-``le`` series, plus ``_sum``/``_count``/``_created``/``_total``) --
+# ~100 useless series that bloat the tool result past the model's per-minute
+# token budget. Scope the query to just these gauge families instead.
+TRIAGE_METRIC_NAMES = (
+    "svc_p99_latency_ms",
+    "svc_error_rate_pct",
+    "svc_active_connections",
+    "svc_cache_hit_ratio",
+    "svc_max_connections",
+)
+_METRIC_NAME_SELECTOR = "|".join(TRIAGE_METRIC_NAMES)
 
 # Canonical journey order (login -> ... -> logout), used only to order a
 # reconstructed trace's top-level steps for display -- mirrors
@@ -128,20 +133,24 @@ def query_prometheus(
 ) -> Optional[list[dict]]:
     """Query Prometheus for metric time-series data via the HTTP API.
 
-    ``service=None`` queries every ``svc_*`` metric across all services;
-    passing a service name scopes the query to that service's label.
+    Scopes to the ``TRIAGE_METRIC_NAMES`` gauge families only (not every
+    ``svc_*`` series -- see that constant). ``service=None`` queries those
+    metrics across all services; passing a service name scopes to that
+    service's label.
 
     Returns a list of Prometheus result series (each with ``metric`` and
     ``values`` keys), or **None** if the live endpoint is unreachable.
     """
     start, end = parse_timeframe(timeframe)
 
-    # ``or``-chaining would only return the leftmost metric with data;
-    # ``__name__=~"svc_.*"`` matches every service metric family instead.
+    # Match only the handful of gauge families a triage actually reads --
+    # anchoring with ``^…$`` so e.g. ``svc_error_rate_pct`` doesn't also pull
+    # in ``svc_error_rate_pct_bucket``-style derived series.
+    name_selector = f'__name__=~"^({_METRIC_NAME_SELECTOR})$"'
     if service and service != "all":
-        promql = f'{{__name__=~"svc_.*",service="{service}"}}'
+        promql = f'{{{name_selector},service="{service}"}}'
     else:
-        promql = '{__name__=~"svc_.*"}'
+        promql = f'{{{name_selector}}}'
 
     params = {
         "query": promql,
@@ -167,76 +176,14 @@ def query_prometheus(
         logger.info("Prometheus query succeeded: %d series returned", len(data))
         return data
     except requests.ConnectionError:
-        logger.warning("Prometheus connection refused at %s — will fall back",
-                        PROMETHEUS_URL)
+        logger.warning("Prometheus connection refused at %s", PROMETHEUS_URL)
         return None
     except requests.Timeout:
-        logger.warning("Prometheus request timed out at %s — will fall back",
-                        PROMETHEUS_URL)
+        logger.warning("Prometheus request timed out at %s", PROMETHEUS_URL)
         return None
     except (KeyError, ValueError) as exc:
         logger.warning("Prometheus response malformed: %s", exc)
         return None
-
-
-def _load_metrics_fallback(
-    service: Optional[str] = DEFAULT_SERVICE,
-) -> Optional[list[dict]]:
-    """Read metric values from the static JSON files.
-
-    ``service=None`` merges every service's fallback file into one series
-    list. Returns a list of Prometheus-style series dicts.
-    """
-    metrics_dir = DATA_DIR / "metrics"
-    if not metrics_dir.is_dir():
-        logger.debug("Metrics fallback dir %s not found", metrics_dir)
-        return None
-
-    targets = ALL_SERVICES if not service or service == "all" else (service,)
-    combined: list[dict] = []
-    for svc in targets:
-        combined.extend(_load_one_service_metrics_fallback(svc))
-
-    if not combined:
-        return None
-    logger.info("Loaded metrics fallback for %d service(s)", len(targets))
-    return combined
-
-
-def _load_one_service_metrics_fallback(service: str) -> list[dict]:
-    metrics_dir = DATA_DIR / "metrics"
-    for filename in (f"{service}-current-metrics.json", f"{service}-2026-05-14-metrics.json"):
-        path = metrics_dir / filename
-        if not path.exists():
-            continue
-        try:
-            with open(path) as f:
-                data = json.load(f)
-        except (json.JSONDecodeError, OSError) as exc:
-            logger.warning("Failed to read metrics fallback %s: %s", filename, exc)
-            continue
-
-        series = data.get("series", [])
-        if not series:
-            continue
-
-        # Only the last (most recent) point is needed — _format_live_data only
-        # reads the latest value from each series.
-        last_point = series[-1]
-        ts = last_point.get("timestamp", "")
-        return [
-            {"metric": {"__name__": "svc_p99_latency_ms", "service": service},
-             "values": [[ts, str(last_point.get("p99_latency_ms", "0"))]]},
-            {"metric": {"__name__": "svc_error_rate_pct", "service": service},
-             "values": [[ts, str(last_point.get("error_rate_pct", "0"))]]},
-            {"metric": {"__name__": "svc_active_connections", "service": service},
-             "values": [[ts, str(last_point.get("active_connections", "0"))]]},
-            {"metric": {"__name__": "svc_cache_hit_ratio", "service": service},
-             "values": [[ts, str(last_point.get("cache_hit_ratio", "0"))]]},
-            {"metric": {"__name__": "svc_max_connections", "service": service},
-             "values": [[ts, str(last_point.get("max_connections", "0"))]]},
-        ]
-    return []
 
 
 # ---------------------------------------------------------------------------
@@ -295,66 +242,14 @@ def query_loki(
                      len(entries), len(raw))
         return entries
     except requests.ConnectionError:
-        logger.warning("Loki connection refused at %s — will fall back", LOKI_URL)
+        logger.warning("Loki connection refused at %s", LOKI_URL)
         return None
     except requests.Timeout:
-        logger.warning("Loki request timed out at %s — will fall back", LOKI_URL)
+        logger.warning("Loki request timed out at %s", LOKI_URL)
         return None
     except (KeyError, ValueError) as exc:
         logger.warning("Loki response malformed: %s", exc)
         return None
-
-
-def _load_logs_fallback(
-    service: Optional[str] = DEFAULT_SERVICE,
-) -> Optional[list[dict]]:
-    """Read log lines from the static JSONL files.
-
-    ``service=None`` merges every service's fallback file. Returns a list
-    of log entry dicts.
-    """
-    logs_dir = DATA_DIR / "logs"
-    if not logs_dir.is_dir():
-        logger.debug("Logs fallback dir %s not found", logs_dir)
-        return None
-
-    targets = ALL_SERVICES if not service or service == "all" else (service,)
-    combined: list[dict] = []
-    for svc in targets:
-        combined.extend(_load_one_service_logs_fallback(svc))
-
-    if not combined:
-        return None
-    logger.info("Loaded logs fallback for %d service(s), %d lines total",
-                 len(targets), len(combined))
-    return combined
-
-
-def _load_one_service_logs_fallback(service: str) -> list[dict]:
-    logs_dir = DATA_DIR / "logs"
-    for filename in (f"{service}-current-app-logs.jsonl", f"{service}-2026-05-14-app-logs.jsonl"):
-        path = logs_dir / filename
-        if not path.exists():
-            continue
-        try:
-            entries = []
-            with open(path) as f:
-                for line in f:
-                    line = line.strip()
-                    if not line:
-                        continue
-                    log_entry = json.loads(line)
-                    entries.append({
-                        "timestamp": log_entry.get("timestamp", ""),
-                        "line": json.dumps(log_entry),
-                        "labels": {"service": service},
-                    })
-            if entries:
-                return entries
-        except (json.JSONDecodeError, OSError) as exc:
-            logger.warning("Failed to read logs fallback %s: %s", filename, exc)
-            continue
-    return []
 
 
 # ---------------------------------------------------------------------------
@@ -680,49 +575,31 @@ def query_logs(
     service: Optional[str] = DEFAULT_SERVICE,
     timeframe: str = "15m",
 ) -> dict:
-    """Query both metrics and logs, with automatic fallback.
+    """Query both metrics and logs from the live stack.
 
     Returns a dict::
 
         {
             "metrics": <list> or None,
             "logs":    <list> or None,
-            "source":  "live" | "static_fallback" | "unavailable",
+            "source":  "live" | "unavailable",
         }
+
+    ``source`` is ``"unavailable"`` only when *neither* Prometheus nor Loki
+    could be reached -- callers must tell the engineer that live telemetry
+    could not be reached rather than substituting stale data.
     """
-    result: dict = {"metrics": None, "logs": None, "source": "live"}
     logger.info("query_logs(service='%s', timeframe='%s')", service or "all", timeframe)
 
-    # --- Metrics -------------------------------------------------------
     prom_data = query_prometheus(service, timeframe)
-    if prom_data is not None:
-        result["metrics"] = prom_data
-        logger.debug("Metrics: live (Prometheus)")
-    else:
-        fallback = _load_metrics_fallback(service)
-        if fallback is not None:
-            result["metrics"] = fallback
-            result["source"] = "static_fallback"
-            logger.info("Metrics: static fallback")
-        else:
-            result["source"] = "unavailable"
-            logger.warning("Metrics: unavailable (Prometheus + fallback both failed)")
+    if prom_data is None:
+        logger.warning("Metrics: unavailable (Prometheus unreachable)")
 
-    # --- Logs ----------------------------------------------------------
     loki_data = query_loki(service, timeframe)
-    if loki_data is not None:
-        result["logs"] = loki_data
-        logger.debug("Logs: live (Loki)")
-    else:
-        fallback = _load_logs_fallback(service)
-        if fallback is not None:
-            result["logs"] = fallback
-            if result["source"] != "unavailable":
-                result["source"] = "static_fallback"
-            logger.info("Logs: static fallback")
-        elif result["source"] != "unavailable":
-            result["source"] = "static_fallback"
-            logger.warning("Logs: unavailable (Loki + fallback both failed)")
+    if loki_data is None:
+        logger.warning("Logs: unavailable (Loki unreachable)")
 
-    logger.info("query_logs result: source=%s", result.get("source"))
+    source = "live" if (prom_data is not None or loki_data is not None) else "unavailable"
+    result = {"metrics": prom_data, "logs": loki_data, "source": source}
+    logger.info("query_logs result: source=%s", source)
     return result
