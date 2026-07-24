@@ -68,9 +68,12 @@ are both fundamentally slowness-driven.
 
 ## Known Issue #1: Postgres connection pool exhaustion
 
-**Symptom signature:** p99 latency climbs gradually over 10-20 minutes (not a
-sudden step), `active_connections` pinned at `max_connections`, application
-logs show `could not obtain connection from pool within <N>ms`.
+**Symptom signature:** p99 latency climbs gradually (not a sudden step) as
+`active_connections` rises from baseline toward `max_connections`, pins at
+the ceiling while pressure holds, then eases back down as pressure
+subsides. Application logs show `could not obtain connection from pool
+within <N>ms`.
+
 
 **Mechanism:** each pod holds a fixed pool of pre-opened database connections
 (cheaper than opening one per request). When every connection is checked out

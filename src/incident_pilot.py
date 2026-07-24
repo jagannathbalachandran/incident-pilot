@@ -204,13 +204,10 @@ class IncidentPilot:
             embedding_function=embeddings,
         )
 
-    def retrieve(self, user_input: str, k: int = 2) -> list[dict]:
+    def retrieve(self, user_input: str, k: int = 3) -> list[dict]:
         """Return top-k grounding chunks as ``{source, section, content}`` dicts.
 
-        k defaults to 2 (not 3) to keep the RAG block folded into every LLM
-        invoke small -- on Groq's tight free-tier per-minute token budget the
-        3rd chunk's ~200 tokens, re-sent across 2-3 invokes per query, is not
-        worth its marginal grounding value."""
+        k defaults to 3"""
         if self.vectorstore is None:
             logger.warning("retrieve() called but vectorstore is unavailable")
             return []
