@@ -8,6 +8,15 @@ call before producing a cited triage summary. Tool calls are a real MCP
 round trip to ``mcp_server/server.py`` (spawned once, over stdio) -- not a
 same-process function call.
 
+RAG retrieval uses HyDE query expansion (``_expand_query``): the engineer's
+raw symptom description is sent to the LLM, which generates 5 targeted
+search queries in the vocabulary runbooks/postmortems actually use (metric
+names, config params, known-issue titles) rather than the engineer's
+vocabulary. All 6 queries (5 expanded + the original) run against ChromaDB
+independently and the results are deduplicated by content -- the union
+covers multiple triage hypotheses, not just whichever one lexically matched
+the raw query.
+
 Running this file directly fires a grounded triage query against the
 connection-pool-exhaustion runbook.
 
@@ -115,6 +124,32 @@ def _build_tools(mcp_client: MCPClient) -> list[StructuredTool]:
 SYSTEM_PROMPT_PATH = Path(__file__).parent.parent / "prompts" / "system_prompt.md"
 VECTORSTORE_DIR = Path(__file__).parent.parent / "synthetic-data" / "vectorstore"
 
+# Chunks retrieved per HyDE-expanded query. 6 queries (5 expanded + original)
+# x 3 chunks = up to 18 raw hits before dedup.
+CHUNKS_PER_QUERY = 3
+
+# HyDE expansion prompt -- separate from the triage system prompt so the LLM
+# is in "query generator" mode, not "triage copilot" mode.
+HYDE_PROMPT = """\
+You are helping an incident triage system retrieve the right runbook and \
+postmortem content for an on-call engineer.
+
+The engineer described this incident:
+"{query}"
+
+Generate exactly 5 search queries. Each query must be a short phrase that \
+would appear as a section heading, known issue title, mitigation step, or \
+diagnostic check inside a runbook or postmortem -- not a monitoring query or \
+a database command. Cover these angles:
+1. The most likely root cause and its symptoms
+2. A second possible root cause to rule out
+3. The immediate mitigation or fix steps
+4. How to confirm the root cause is resolved
+5. Escalation path if the issue is not resolved within 15-30 minutes
+
+Return only the 5 queries, one per line. No numbering, no explanation.\
+"""
+
 TEST_QUERIES = [
     (
         "deploy",
@@ -204,26 +239,66 @@ class IncidentPilot:
             embedding_function=embeddings,
         )
 
-    def retrieve(self, user_input: str, k: int = 3) -> list[dict]:
-        """Return top-k grounding chunks as ``{source, section, content}`` dicts.
+    def _expand_query(self, user_input: str) -> list[str]:
+        """HyDE: ask the LLM to generate 5 targeted search queries for the
+        engineer's symptom description.
 
-        k defaults to 3"""
-        if self.vectorstore is None:
-            logger.warning("retrieve() called but vectorstore is unavailable")
-            return []
-        logger.debug("RAG similarity_search(k=%d): query='%s...'", k, user_input[:60])
-        results = self.vectorstore.similarity_search(user_input, k=k)
-        chunks = [
-            {
-                "source": doc.metadata.get("source", "unknown"),
-                "section": doc.metadata.get("section", "unknown"),
-                "content": doc.page_content,
-            }
-            for doc in results
+        The LLM uses its knowledge of incident-response patterns to generate
+        queries in the vocabulary of runbooks (metric names, config params,
+        log patterns) rather than the vocabulary of the symptom. This bridges
+        the gap between what the engineer says and what the documents contain.
+
+        The original query is always prepended as a fallback so retrieval
+        never returns fewer results than a plain search would.
+        """
+        prompt = HYDE_PROMPT.format(query=user_input)
+        response = self.model.invoke([HumanMessage(content=prompt)])
+        expanded = [
+            line.strip()
+            for line in response.content.strip().split("\n")
+            if line.strip()
         ]
-        logger.info("RAG retrieved %d chunk(s): %s", len(chunks),
+        # Prepend original query so it is always searched even if the LLM
+        # produces fewer than 5 lines or misses the core symptom vocabulary.
+        all_queries = [user_input] + expanded
+        return all_queries[:6]  # cap to avoid runaway expansion
+
+    def _retrieve_with_queries(self, queries: list[str]) -> list[dict]:
+        """Run a pre-computed list of queries against the vector store and
+        deduplicate the results by content.
+
+        Each result dict has: source (filename), section (heading), content.
+        """
+        if self.vectorstore is None:
+            logger.warning("_retrieve_with_queries() called but vectorstore is unavailable")
+            return []
+
+        seen: set[int] = set()
+        chunks: list[dict] = []
+        for query in queries:
+            docs = self.vectorstore.similarity_search(query, k=CHUNKS_PER_QUERY)
+            for doc in docs:
+                fingerprint = hash(doc.page_content)
+                if fingerprint in seen:
+                    continue
+                seen.add(fingerprint)
+                chunks.append({
+                    "source": doc.metadata.get("source", "unknown"),
+                    "section": doc.metadata.get("section", "unknown"),
+                    "content": doc.page_content,
+                })
+
+        logger.info("RAG retrieved %d unique chunk(s) across %d quer(y/ies): %s",
+                     len(chunks), len(queries),
                      [f"{c['source']} / {c['section']}" for c in chunks])
         return chunks
+
+    def retrieve(self, user_input: str) -> list[dict]:
+        """Expand the query with HyDE, run all expanded queries against the
+        vector store, and return the deduplicated merged set of grounding
+        chunks as ``{source, section, content}`` dicts."""
+        queries = self._expand_query(user_input)
+        return self._retrieve_with_queries(queries)
 
     def _format_context(self, chunks: list[dict]) -> str:
         if not chunks:
@@ -403,6 +478,8 @@ class IncidentPilot:
         """Return the trace data from the last query for the UI trace panel.
 
         Returns a dict with keys:
+          - ``queries``: original query + HyDE-expanded queries actually run
+            against the vector store this turn
           - ``chunks``: list of RAG chunk dicts ``{source, section, content}``
           - ``metrics``: live metrics snapshot ``{name, service, endpoint, value}`` list
             (empty if the model never called ``query_metrics`` this turn)
@@ -448,9 +525,11 @@ class IncidentPilot:
         req_id = get_request_id() or "-"
         logger.info("Processing query [req=%s]: '%s...'", req_id, user_input[:80])
 
-        # 1. RAG retrieval -- unchanged, always runs (cheap, local, near-
-        #    always relevant to a triage question).
-        chunks = self.retrieve(user_input)
+        # 1. RAG retrieval -- always runs. HyDE (_expand_query) turns the
+        #    engineer's raw description into targeted runbook-vocabulary
+        #    searches before hitting the vector store.
+        queries = self._expand_query(user_input)
+        chunks = self._retrieve_with_queries(queries)
         rag_block = self._format_context(chunks)
 
         scope_hint = (
@@ -538,6 +617,7 @@ class IncidentPilot:
         trace_summary = (last_logs_result or {}).get("trace_summary", {})
 
         self._last_trace = {
+            "queries": queries,
             "chunks": chunks,
             "metrics": trace_metrics,
             "log_analysis": trace_log_analysis,
@@ -568,12 +648,11 @@ if __name__ == "__main__":
     _separator("triage (RAG + agent-decided MCP tool calls)")
     print(f"USER:\n  {TRIAGE_QUERY}\n")
 
-    retrieved = pilot.retrieve(TRIAGE_QUERY)
-    print(f"[retrieved {len(retrieved)} chunk(s): "
-          f"{[c['source'] + ' / ' + c['section'] for c in retrieved]}]\n")
-
     response = pilot.query(TRIAGE_QUERY)
     trace = pilot.get_trace()
+    print(f"[HyDE queries: {trace.get('queries', [])}]")
+    print(f"[retrieved {len(trace.get('chunks', []))} chunk(s): "
+          f"{[c['source'] + ' / ' + c['section'] for c in trace.get('chunks', [])]}]")
     print(f"[tool calls made: {[t['name'] for t in trace.get('tool_calls', [])]}]")
     print(f"[data source: {trace.get('source')}]\n")
 

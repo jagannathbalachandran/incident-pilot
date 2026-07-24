@@ -17,6 +17,7 @@ from unittest.mock import MagicMock, patch
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 from incident_pilot import IncidentPilot
+from langchain_core.documents import Document
 from langchain_core.messages import AIMessage, SystemMessage, ToolMessage
 
 # ---------------------------------------------------------------------------
@@ -53,6 +54,20 @@ ACTION_TAKEN_PHRASES = [
     "successfully rolled back",
     "changes applied",
 ]
+
+# Stand-in HyDE response for tests that mock ChatGroq -- retrieve() now
+# always calls self.model.invoke() once (the plain, non-tool-bound call) to
+# expand the query before hitting the vector store.
+FAKE_HYDE_RESPONSE = AIMessage(
+    content=(
+        "connection pool exhaustion\n"
+        "pool_acquire_timeout_ms\n"
+        "increase pgbouncer pool size\n"
+        "active_connections back under max\n"
+        "escalate to database on-call"
+    ),
+    tool_calls=[],
+)
 
 
 # ---------------------------------------------------------------------------
@@ -319,6 +334,9 @@ class TestAgentStructure(unittest.TestCase):
         with patch("incident_pilot.ChatGroq") as mock_groq_class, \
              patch("incident_pilot.MCPClient"):
             mock_model = MagicMock()
+            # self.model.invoke() is the plain (non-tool-bound) call used by
+            # the HyDE query-expansion step inside retrieve().
+            mock_model.invoke.return_value = FAKE_HYDE_RESPONSE
             # bind_tools() returns the "model with tools" runnable that
             # query() actually invokes -- give it a plain-text, no-tool-call
             # response so the loop terminates after the first round.
@@ -347,6 +365,7 @@ class TestAgentStructure(unittest.TestCase):
         with patch("incident_pilot.ChatGroq") as mock_groq_class, \
              patch("incident_pilot.MCPClient") as mock_mcp_class:
             mock_model = MagicMock()
+            mock_model.invoke.return_value = FAKE_HYDE_RESPONSE
             tool_call_response = AIMessage(
                 content="",
                 tool_calls=[{
@@ -396,6 +415,7 @@ class TestAgentStructure(unittest.TestCase):
         with patch("incident_pilot.ChatGroq") as mock_groq_class, \
              patch("incident_pilot.MCPClient") as mock_mcp_class:
             mock_model = MagicMock()
+            mock_model.invoke.return_value = FAKE_HYDE_RESPONSE
             mock_model.bind_tools.return_value.invoke.return_value = AIMessage(
                 content="The runbook says to check pool_acquire_timeout_ms.", tool_calls=[],
             )
@@ -411,6 +431,93 @@ class TestAgentStructure(unittest.TestCase):
         self.assertEqual(trace["source"], "not_queried")
         self.assertEqual(trace["tool_calls"], [])
         self.assertEqual(response, "The runbook says to check pool_acquire_timeout_ms.")
+
+
+class TestHydeQueryExpansion(unittest.TestCase):
+    """Tests for HyDE query expansion + the deduplicated multi-query
+    retrieval it feeds. No real API calls or vector store -- both the LLM
+    and the vector store are mocked."""
+
+    def _make_pilot(self, hyde_response: AIMessage) -> IncidentPilot:
+        with patch("incident_pilot.ChatGroq") as mock_groq_class, \
+             patch("incident_pilot.MCPClient"):
+            mock_model = MagicMock()
+            mock_model.invoke.return_value = hyde_response
+            mock_groq_class.return_value = mock_model
+            pilot = IncidentPilot()
+        return pilot
+
+    def test_expand_query_prepends_original_and_caps_at_six(self):
+        pilot = self._make_pilot(AIMessage(
+            content=(
+                "connection pool exhaustion\n"
+                "pool_acquire_timeout_ms\n"
+                "increase pgbouncer pool size\n"
+                "active_connections back under max\n"
+                "escalate to database on-call\n"
+                "an extra sixth line the LLM shouldn't produce but might"
+            ),
+            tool_calls=[],
+        ))
+        queries = pilot._expand_query("checkout is slow")
+
+        self.assertEqual(len(queries), 6)
+        self.assertEqual(queries[0], "checkout is slow")
+        self.assertEqual(queries[1], "connection pool exhaustion")
+
+    def test_expand_query_handles_fewer_than_five_lines(self):
+        pilot = self._make_pilot(AIMessage(content="pool exhaustion", tool_calls=[]))
+        queries = pilot._expand_query("checkout is slow")
+
+        self.assertEqual(queries, ["checkout is slow", "pool exhaustion"])
+
+    def test_retrieve_with_queries_deduplicates_across_queries(self):
+        pilot = self._make_pilot(AIMessage(content="pool exhaustion", tool_calls=[]))
+
+        shared_doc = Document(
+            page_content="Restart the pool.",
+            metadata={"source": "checkout_api_runbook.pdf", "section": "Mitigation"},
+        )
+        unique_doc = Document(
+            page_content="Escalate to database on-call.",
+            metadata={"source": "checkout_api_runbook.pdf", "section": "Escalation"},
+        )
+        mock_vectorstore = MagicMock()
+        mock_vectorstore.similarity_search.side_effect = [
+            [shared_doc], [shared_doc, unique_doc],
+        ]
+        pilot.vectorstore = mock_vectorstore
+
+        chunks = pilot._retrieve_with_queries(["query one", "query two"])
+
+        self.assertEqual(len(chunks), 2)
+        contents = {c["content"] for c in chunks}
+        self.assertEqual(contents, {"Restart the pool.", "Escalate to database on-call."})
+        self.assertEqual(mock_vectorstore.similarity_search.call_count, 2)
+
+    def test_retrieve_with_queries_empty_when_vectorstore_unavailable(self):
+        pilot = self._make_pilot(AIMessage(content="pool exhaustion", tool_calls=[]))
+        pilot.vectorstore = None
+
+        self.assertEqual(pilot._retrieve_with_queries(["anything"]), [])
+
+    def test_retrieve_runs_expansion_then_search(self):
+        pilot = self._make_pilot(AIMessage(
+            content="pool exhaustion\nmitigation steps", tool_calls=[],
+        ))
+        doc = Document(
+            page_content="content",
+            metadata={"source": "s.pdf", "section": "sec"},
+        )
+        mock_vectorstore = MagicMock()
+        mock_vectorstore.similarity_search.return_value = [doc]
+        pilot.vectorstore = mock_vectorstore
+
+        chunks = pilot.retrieve("checkout is slow")
+
+        # 3 queries (original + 2 expanded lines), one similarity_search call each
+        self.assertEqual(mock_vectorstore.similarity_search.call_count, 3)
+        self.assertEqual(len(chunks), 1)  # same doc returned every time -> deduped
 
 
 if __name__ == "__main__":
