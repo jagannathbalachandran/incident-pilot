@@ -509,29 +509,34 @@ class TestMultiIncidentEngine(unittest.TestCase):
         self.assertGreater(snap.pool_active, 118)
 
     def test_lifecycle_pool_progresses_and_resolves(self):
+        # Total lifecycle = POOL_CLIMBING_MINUTES(15) + POOL_PLATEAU_MINUTES(120)
+        # + POOL_RECOVERY_MINUTES(10) = 145 ticks.
         engine.start_scenario("pool", auto_resolve=True)
         self.assertEqual(engine._incidents[("pool", "checkout-api")].phase, "climbing")
-        for _ in range(39):
+        for _ in range(144):
             engine.tick()
         self.assertIn(("pool", "checkout-api"), engine._incidents)
-        engine.tick()  # tick 40 -> resolved -> removed
+        engine.tick()  # tick 145 -> resolved -> removed
         self.assertNotIn(("pool", "checkout-api"), engine._incidents)
         self.assertEqual(engine.get_state(), [])
 
     def test_lifecycle_cache_progresses_and_resolves(self):
+        # Total lifecycle = CACHE_FAILOVER_MINUTES(120) + CACHE_WARMING_MINUTES(12)
+        # = 132 ticks.
         engine.start_scenario("cache", auto_resolve=True)
         engine.tick()
         self.assertEqual(engine._incidents[("cache", "checkout-api")].phase, "failover")
-        for _ in range(16):
-            engine.tick()  # tick 17 -> still warming
+        for _ in range(130):
+            engine.tick()  # tick 131 -> still warming
         self.assertEqual(engine._incidents[("cache", "checkout-api")].phase, "warming")
-        engine.tick()  # tick 18 -> resolved
+        engine.tick()  # tick 132 -> resolved
         self.assertEqual(engine.get_state(), [])
 
     def test_lifecycle_fraud_progresses_and_resolves(self):
+        # Total lifecycle = FRAUD_ACTIVE_MINUTES(120) ticks.
         engine.start_scenario("fraud", auto_resolve=True)
         self.assertEqual(engine._incidents[("fraud", "fraud-scoring-svc")].phase, "active")
-        for _ in range(19):
+        for _ in range(119):
             engine.tick()
         self.assertIn(("fraud", "fraud-scoring-svc"), engine._incidents)
         engine.tick()
