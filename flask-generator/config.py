@@ -54,13 +54,17 @@ N_USERS = 20
 # ---------------------------------------------------------------------------
 
 POOL_CLIMBING_MINUTES = 15
-POOL_PLATEAU_MINUTES = 15
+# Steady-state ("plateau") phases below are extended to 120 (2 real minutes
+# in accelerated mode) so there's enough time to actually run triage/tool
+# calls against the incident before it moves into recovery -- the original
+# 15s/6s/20s windows were routinely gone before a query finished.
+POOL_PLATEAU_MINUTES = 120
 POOL_RECOVERY_MINUTES = 10
 
-CACHE_FAILOVER_MINUTES = 6
+CACHE_FAILOVER_MINUTES = 120
 CACHE_WARMING_MINUTES = 12
 
-FRAUD_ACTIVE_MINUTES = 20
+FRAUD_ACTIVE_MINUTES = 120
 
 # ---------------------------------------------------------------------------
 # Incident kind -> default target service, and which topology capability

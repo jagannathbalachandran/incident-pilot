@@ -1,15 +1,10 @@
 """
 Ingestion pipeline.
 
-Real-runbook corpus (synthetic-data/real-runbooks/) and postmortems
-(synthetic-data/postmorterms/):
-  Both are treated as heterogeneous enterprise documents of unknown format
-  (today postmortems happen to be markdown, and real-runbooks are a mix of
-  PDF and DOCX — the pipeline doesn't assume any single format; new formats
-  in either directory just need an extractor added to
-  REAL_RUNBOOK_EXTRACTORS). Both are chunked with SemanticChunker, which
-  embeds sentences and splits where meaning shifts significantly. Chunking
-  itself is format-agnostic — only text extraction is format-specific.
+Indexes two corpora: runbooks (synthetic-data/runbooks/) and postmortems
+(synthetic-data/postmorterms/) -- both markdown, frontmatter stripped, then
+chunked with SemanticChunker, which embeds sentences and splits where
+meaning shifts significantly (not a plain ## header split).
 
   Safety net: any chunk exceeding MAX_CHUNK_CHARS is further split by
   RecursiveCharacterTextSplitter to stay within the embedding model's
@@ -18,7 +13,9 @@ Real-runbook corpus (synthetic-data/real-runbooks/) and postmortems
   The embedding model is created once and shared between SemanticChunker
   and ChromaDB to avoid loading it twice.
 
-synthetic-data/runbooks/ is not currently indexed.
+synthetic-data/real-runbooks/ (PDF/DOCX) is not currently indexed -- the
+format-agnostic extractors below (extract_pdf_text/extract_docx_text) are
+kept in case that source is switched back on.
 
 Usage:
     python src/ingestion.py
@@ -40,6 +37,7 @@ from langchain_chroma import Chroma
 
 REPO_ROOT = Path(__file__).parent.parent
 POSTMORTEMS_DIR    = REPO_ROOT / "synthetic-data" / "postmorterms"
+RUNBOOKS_DIR       = REPO_ROOT / "synthetic-data" / "runbooks"
 REAL_RUNBOOKS_DIR  = REPO_ROOT / "synthetic-data" / "real-runbooks"
 VECTORSTORE_DIR    = REPO_ROOT / "synthetic-data" / "vectorstore"
 
@@ -206,20 +204,13 @@ def build_vectorstore() -> Chroma:
 
     all_chunks: list[Document] = []
 
-    # 3. Real-runbook corpus (PDF, DOCX, ...) — semantic chunking, format-agnostic
-    print("\nReal-runbook corpus (semantic chunking):")
-    if REAL_RUNBOOKS_DIR.exists():
-        for path in sorted(REAL_RUNBOOKS_DIR.iterdir()):
-            if not path.is_file():
-                continue
-            try:
-                text = extract_real_runbook_text(path)
-            except ValueError as e:
-                print(f"  {path.name}: SKIPPED — {e}")
-                continue
-            chunks = semantic_chunk_text(text, path.name, embeddings)
+    # 3. Runbook corpus (markdown) — semantic chunking, not a ## header split
+    print("\nRunbook corpus (semantic chunking):")
+    if RUNBOOKS_DIR.exists():
+        for filename, content in load_markdown_documents([RUNBOOKS_DIR]):
+            chunks = semantic_chunk_text(content, filename, embeddings)
             all_chunks.extend(chunks)
-            print(f"  {path.name}: {len(chunks)} chunks [semantic]")
+            print(f"  {filename}: {len(chunks)} chunks [semantic]")
 
     # 4. Postmortems — same semantic chunking, treated as format-agnostic too
     print("\nPostmortem corpus (semantic chunking):")
