@@ -493,6 +493,22 @@ class IncidentPilot:
 
         return IncidentPilot._build_contradiction_text(data_class, query_class)
 
+    @staticmethod
+    def _missing_rag_citation(response_text: str, chunks: list[dict]) -> bool:
+        """True if RAG returned chunks this turn but the response cites none
+        of them.
+
+        Mirrors the system prompt's citation contract (prompts/system_prompt.md,
+        "Citations"): a [Runbook: ...] or [Postmortem: ...] tag is required
+        whenever RAG returned relevant context. Prompting alone doesn't
+        reliably produce this, especially on smaller models, which tend to
+        answer entirely from tool results and drop the RAG context -- this
+        is the code-level backstop.
+        """
+        if not chunks:
+            return False
+        return "[Runbook" not in response_text and "[Postmortem" not in response_text
+
     # ------------------------------------------------------------------
     # Trace data (exposed for the Gradio UI trace panel)
     # ------------------------------------------------------------------
@@ -519,9 +535,9 @@ class IncidentPilot:
             could not be reached)
           - ``timings``: list of ``{phase, duration_ms}`` for every phase run
             this turn (hyde_expansion, rag_retrieval, initial_llm_call,
-            tool_round_N_execution/_llm_call, contradiction_check, ...,
-            ending with a ``total`` entry) -- lets the UI show where time
-            actually went.
+            tool_round_N_execution/_llm_call, contradiction_check,
+            citation_check, ..., ending with a ``total`` entry) -- lets the
+            UI show where time actually went.
         """
         return (self._last_trace or {}).copy()
 
@@ -664,6 +680,30 @@ class IncidentPilot:
             t0 = time.perf_counter()
             response = model_for_this_turn.invoke(messages)
             _mark("contradiction_revision_llm_call", t0)
+
+        # 5. Citation enforcement -- prompting alone isn't reliable, especially
+        #    on smaller models: they'll often answer entirely from tool
+        #    results and drop the retrieved RAG context. Skip for action-
+        #    request turns (guardrail refusals aren't triage answers and
+        #    don't need a [Runbook]/[Postmortem] tag).
+        t0 = time.perf_counter()
+        missing_citation = not action_request and self._missing_rag_citation(response.content, chunks)
+        _mark("citation_check", t0)
+        if missing_citation:
+            logger.info("[req=%s] RAG chunks retrieved but no [Runbook]/[Postmortem] tag in "
+                        "response -- requesting revision", req_id)
+            messages.append(response)
+            messages.append(HumanMessage(
+                content="## Citation check\n\n"
+                        "Your answer didn't cite any of the retrieved runbook/postmortem "
+                        "context with a [Runbook: ...] or [Postmortem: ...] tag, even though "
+                        "relevant chunks were retrieved this turn. Revise your answer to "
+                        "explicitly cite the retrieved context you actually used, per the "
+                        "Citations rule -- don't just describe it in prose."
+            ))
+            t0 = time.perf_counter()
+            response = model_for_this_turn.invoke(messages)
+            _mark("citation_revision_llm_call", t0)
 
         total_ms = round((time.perf_counter() - query_start) * 1000, 1)
         timings.append({"phase": "total", "duration_ms": total_ms})

@@ -50,12 +50,25 @@ Two tools: **`query_metrics`** (Prometheus: p99 latency, error rate, active conn
 
 ## Citations — label every factual claim
 
+Retrieved RAG context arrives as blocks tagged `[Source: <filename> | Section: <section>]`.
+Translate that tag into a citation when you use the text: filenames from the runbook corpus
+(`*-runbook.md`) become **[Runbook: <section>]**; dated postmortem filenames (e.g.
+`2026-07-payment-service-cascade.md`) become **[Postmortem: <section>]**. Example — context
+shows `[Source: checkout-api-runbook.md | Section: Immediate mitigation]` → write "...per
+**[Runbook: Immediate mitigation]**, increase the PgBouncer pool size." Referencing the
+runbook or postmortem in plain prose ("as the runbook describes...") without the bracket tag
+does not satisfy this rule.
+
 - **[Runbook]** — runbook text retrieved this session; cite the section name as returned.
 - **[Postmortem]** — postmortem retrieved this session; cite the incident ID/date as returned.
 - **[Live data]** — a logs/metrics tool result this session; cite service and timeframe.
 - **[Past incident]** — recalled from prior-session memory; cite the summary as returned.
 - **[Agent inference]** — your own reasoning, not backed by a retrieved source; always flag it.
 - **[Contradiction]** — live data conflicts with the engineer's description; flag the mismatch.
+
+If RAG returned chunks relevant to this query, your answer must include at least one
+[Runbook] or [Postmortem] tag drawing on them — don't let live-data analysis crowd out the
+retrieved grounding entirely.
 
 Never fabricate log lines, metric values, incident history, runbook steps, or panel names.
 

@@ -345,6 +345,9 @@ class TestAgentStructure(unittest.TestCase):
             )
             mock_groq_class.return_value = mock_model
             pilot = IncidentPilot()
+        # No RAG chunks -> citation-enforcement revision path stays inactive,
+        # keeping this test scoped to message-ordering, not citation checks.
+        pilot.vectorstore = None
 
         # A plain triage question (not an action request) so tools stay
         # bound and model_with_tools.invoke is the call actually exercised --
@@ -389,6 +392,9 @@ class TestAgentStructure(unittest.TestCase):
             mock_mcp_class.return_value = mock_mcp_client
 
             pilot = IncidentPilot()
+            # No RAG chunks -> citation-enforcement revision path stays
+            # inactive; side_effect above has exactly 2 responses queued.
+            pilot.vectorstore = None
             response = pilot.query("Why is checkout-api slow?")
 
         self.assertEqual(response, "p99 latency is elevated.")
@@ -424,6 +430,7 @@ class TestAgentStructure(unittest.TestCase):
             mock_mcp_class.return_value = mock_mcp_client
 
             pilot = IncidentPilot()
+            pilot.vectorstore = None
             response = pilot.query("What does the runbook say to do for a connection-pool exhaustion?")
 
         mock_mcp_client.call_tool.assert_not_called()
@@ -544,6 +551,89 @@ class TestHydeQueryExpansion(unittest.TestCase):
             [c["content"] for c in chunks],
             ["chunk 1", "chunk 4", "chunk 6", "chunk 2", "chunk 7", "chunk 3"],
         )
+
+
+class TestCitationEnforcement(unittest.TestCase):
+    """Tests for the code-level citation backstop: prompting alone doesn't
+    reliably get [Runbook]/[Postmortem] tags into the response, especially
+    on smaller models, so query() checks and requests a revision itself."""
+
+    # --- _missing_rag_citation (pure unit tests) ---
+
+    def test_missing_rag_citation_true_when_no_tag(self):
+        self.assertTrue(IncidentPilot._missing_rag_citation(
+            "Latency is high due to pool exhaustion.",
+            [{"source": "checkout-api-runbook.md", "section": "Mitigation", "content": "..."}],
+        ))
+
+    def test_missing_rag_citation_false_when_runbook_tag_present(self):
+        self.assertFalse(IncidentPilot._missing_rag_citation(
+            "[Runbook: Immediate mitigation] Increase the pool size.",
+            [{"source": "checkout-api-runbook.md", "section": "Immediate mitigation", "content": "..."}],
+        ))
+
+    def test_missing_rag_citation_false_when_postmortem_tag_present(self):
+        self.assertFalse(IncidentPilot._missing_rag_citation(
+            "[Postmortem: 2026-05-checkout-outage] This happened before.",
+            [{"source": "2026-05-checkout-outage.md", "section": "Root cause", "content": "..."}],
+        ))
+
+    def test_missing_rag_citation_false_when_no_chunks(self):
+        self.assertFalse(IncidentPilot._missing_rag_citation("no citation here at all", []))
+
+    # --- query() integration (mocked model/vectorstore/MCP) ---
+
+    def _pilot_with_chunk(self, mock_model) -> IncidentPilot:
+        with patch("incident_pilot.ChatGroq") as mock_groq_class, \
+             patch("incident_pilot.MCPClient"):
+            mock_groq_class.return_value = mock_model
+            pilot = IncidentPilot()
+        doc = Document(
+            page_content="Increase the PgBouncer pool size.",
+            metadata={"source": "checkout-api-runbook.md", "section": "Immediate mitigation"},
+        )
+        mock_vectorstore = MagicMock()
+        mock_vectorstore.similarity_search_with_score.return_value = [(doc, 0.1)]
+        pilot.vectorstore = mock_vectorstore
+        return pilot
+
+    def test_query_triggers_citation_revision_when_missing(self):
+        mock_model = MagicMock()
+        mock_model.invoke.return_value = FAKE_HYDE_RESPONSE
+        no_citation = AIMessage(content="Latency is high due to pool exhaustion.", tool_calls=[])
+        revised = AIMessage(content="[Runbook: Immediate mitigation] Increase the pool size.", tool_calls=[])
+        mock_model.bind_tools.return_value.invoke.side_effect = [no_citation, revised]
+
+        pilot = self._pilot_with_chunk(mock_model)
+        response = pilot.query("What does the runbook say for pool exhaustion?")
+
+        self.assertEqual(response, "[Runbook: Immediate mitigation] Increase the pool size.")
+        self.assertEqual(mock_model.bind_tools.return_value.invoke.call_count, 2)
+
+    def test_query_skips_citation_revision_when_already_present(self):
+        mock_model = MagicMock()
+        mock_model.invoke.return_value = FAKE_HYDE_RESPONSE
+        cited = AIMessage(content="[Runbook: Immediate mitigation] Increase the pool size.", tool_calls=[])
+        mock_model.bind_tools.return_value.invoke.return_value = cited
+
+        pilot = self._pilot_with_chunk(mock_model)
+        pilot.query("What does the runbook say for pool exhaustion?")
+
+        self.assertEqual(mock_model.bind_tools.return_value.invoke.call_count, 1)
+
+    def test_citation_check_skipped_for_action_request(self):
+        """Guardrail refusals aren't triage answers -- no [Runbook] tag
+        should be demanded of them, even when RAG returned chunks."""
+        mock_model = MagicMock()
+        refusal = AIMessage(content="I can't roll back production for you.", tool_calls=[])
+        mock_model.invoke.side_effect = [FAKE_HYDE_RESPONSE, refusal]
+
+        pilot = self._pilot_with_chunk(mock_model)
+        response = pilot.query(DEPLOY_QUERY)
+
+        self.assertEqual(response, "I can't roll back production for you.")
+        # HyDE + the refusal itself -- no third "citation revision" call.
+        self.assertEqual(mock_model.invoke.call_count, 2)
 
 
 if __name__ == "__main__":
