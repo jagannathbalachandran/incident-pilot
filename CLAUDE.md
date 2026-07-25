@@ -40,21 +40,41 @@ cd src && TOKENIZERS_PARALLELISM=false uv run python app.py
 ## Source files
 
 ### `src/ingestion.py`
-Builds ChromaDB vector store from runbooks/postmortems. Splits on `##` headers, embeds with `all-MiniLM-L6-v2`, persists to `synthetic-data/vectorstore/`. Only needs re-running when the corpus changes.
+Builds ChromaDB vector store from `synthetic-data/runbooks/` + `synthetic-data/postmorterms/`
+(both markdown; YAML frontmatter stripped). Chunked with `SemanticChunker` — embeds sentences
+and splits where meaning shifts significantly (95th percentile breakpoint), not a `##`-header
+split. Any chunk exceeding `MAX_CHUNK_CHARS` (1500) gets a secondary
+`RecursiveCharacterTextSplitter` pass. Format-agnostic PDF/DOCX extractors
+(`extract_pdf_text`/`extract_docx_text`) for `synthetic-data/real-runbooks/` are defined but
+currently unused — that source was swapped out in favor of the markdown runbooks. Only needs
+re-running when the corpus changes; the vector store is volume-mounted into the `incident-pilot`
+container, but a container **restart** is still needed after re-ingesting (its in-process Chroma
+client holds a connection to the old sqlite files, which ingestion deletes and recreates).
 
 ### `src/incident_pilot.py`
 Core `IncidentPilot` class. Key methods:
-- `retrieve(query)` — RAG search over ChromaDB, returns top-k chunks with source/section (always runs)
-- `query(user_input, service=None)` — full pipeline: RAG retrieval, then a bounded tool-calling
-  loop (`model.bind_tools([query_metrics, query_logs]).invoke(...)`) where **the LLM decides**
-  whether/which tool to call, executes real MCP round trips for whatever it asks for, folds the
-  results back in as `ToolMessage`s, then produces a cited answer
+- `_expand_query(user_input)` — HyDE: sends the query to the LLM (plain `self.model.invoke`, no
+  tools bound), which returns 5 targeted search queries in runbook vocabulary; the original query
+  is prepended, capped at 6 total (`HYDE_PROMPT`)
+- `_retrieve_with_queries(queries)` — runs `similarity_search_with_score` for every one of the 6
+  queries (`CHUNKS_PER_QUERY=3` each, up to 18 raw hits), deduplicates by content keeping each
+  chunk's best (lowest-distance) score across whichever queries matched it, ranks the deduplicated
+  set by that score, and returns only the top `MAX_RETRIEVED_CHUNKS` (6) — capped because an
+  uncapped block (commonly 12-15 unique chunks) plus the system prompt and tool schemas exceeds
+  `llama-3.1-8b-instant`'s 6000 tokens-per-minute ceiling on the very first call
+- `retrieve(query)` — convenience wrapper: `_expand_query` then `_retrieve_with_queries` (always runs)
+- `query(user_input, service=None)` — full pipeline: HyDE + RAG retrieval, then a bounded
+  tool-calling loop (`model.bind_tools([query_metrics, query_logs]).invoke(...)`) where **the LLM
+  decides** whether/which tool to call, executes real MCP round trips for whatever it asks for,
+  folds the results back in as `ToolMessage`s, then produces a cited answer. Every phase (HyDE,
+  retrieval, each LLM/tool-call round, contradiction check) is timed with `time.perf_counter()`
+  and logged
 - `_looks_like_action_request(text)` / `MAX_TOOL_ROUNDS` — code-level guardrail backstop: messages
   matching deploy/rollback/hotfix/config-change verbs never get tools bound at all for that call,
   so a tool call is impossible (not just prompted-against) on those messages
 - `_detect_contradictions(...)` — only meaningful if `query_metrics` was actually called this turn
-- `get_trace()` — RAG chunks, which tool(s) were called with what args/results, data source
-  (`live`/`unavailable`/`not_queried`), for the UI trace panel
+- `get_trace()` — HyDE queries, RAG chunks, which tool(s) were called with what args/results, data
+  source (`live`/`unavailable`/`not_queried`), and per-phase `timings`, for the UI trace panel
 
 ### `src/mcp_server/server.py` + `src/mcp_client.py`
 The MCP integration. `mcp_server/server.py` is a standalone `FastMCP` server exposing
@@ -81,7 +101,12 @@ Plus log analysis:
 ### `src/app.py`
 Gradio UI. Shows data source badge (🟢 Live / 🔴 Unavailable / ⚪ Not queried this
 turn). Calls `pilot.query()` once — no pre-fetch — then derives the badge and trace panel
-(including which tool(s) the agent actually called) from `pilot.get_trace()` afterward.
+(including which tool(s) the agent actually called, and a per-phase timing breakdown from
+`trace["timings"]`) from `pilot.get_trace()` afterward. `triage()` wraps the `pilot.query()` call
+in `try/except`: without it, an exception (e.g. a Groq 429/413) left Gradio showing the
+*previous* successful response with just a generic error toast — easy to misread as "this
+response is wrong" rather than "this attempt failed." Failures now return a clear error message
+instead.
 
 ### `flask-generator/`
 Docker FastAPI app that simulates production incidents in real-time:
@@ -110,9 +135,9 @@ uv run python -m pytest tests/ -v
 
 # Specific suites
 uv run python -m pytest tests/test_query_logs.py -v         # 41 tests
-uv run python -m pytest tests/test_incident_pilot.py -v     # 27 tests
+uv run python -m pytest tests/test_incident_pilot.py -v     # 33 tests (incl. TestHydeQueryExpansion)
 uv run python -m pytest tests/test_mcp_server.py -v         # 6 tests
-uv run python -m pytest tests/test_fastapi_generator.py -v  # 64 tests
+uv run python -m pytest tests/test_fastapi_generator.py -v  # 83 tests
 ```
 
 `test_query_logs.py` and `test_mcp_server.py` mock all network calls — no live stack needed.
@@ -138,36 +163,56 @@ curl -X POST http://localhost:5001/api/incidents/fraud/trigger
 curl http://localhost:5001/api/incidents/state
 ```
 
-Lifecycle durations (accelerated mode, 1s = 1 simulated minute):
-- **Pool**: 15s climbing + 15s plateau + 10s recovery = ~40s total
-- **Cache**: 6s failover + 12s warming = ~18s total
-- **Fraud**: 20s active
+Lifecycle durations (accelerated mode, 1s = 1 simulated minute). Each kind's steady-state phase
+(pool's `plateau`, cache's `failover`, fraud's `active`) was extended from its original
+15s/6s/20s to 120s (2 real minutes) so there's actually enough time to run a triage query against
+a live incident before it moves into recovery:
+- **Pool**: 15s climbing + 120s plateau + 10s recovery = ~145s total
+- **Cache**: 120s failover + 12s warming = ~132s total
+- **Fraud**: 120s active
 
 ## Data flow (query → response)
 
 ```
 User query
   │
-  ├─ 1. retrieve() → ChromaDB similarity search → top-3 RAG chunks (always)
+  ├─ 1. HyDE expansion (_expand_query) -- self.model.invoke(), no tools bound:
+  │      engineer's raw description → 5 LLM-generated runbook-vocabulary
+  │      search queries + the original = 6 queries total (1 LLM call)
   │
-  ├─ 2. Build initial prompt: ## Retrieved context (RAG) + engineer's description
+  ├─ 2. RAG retrieval (_retrieve_with_queries) -- always runs:
+  │      similarity_search_with_score(query, k=3) for each of the 6 queries
+  │      → dedupe by content, keeping each chunk's best score
+  │      → rank by score → top MAX_RETRIEVED_CHUNKS (6) sent to the LLM
   │
-  ├─ 3. Action-request check (code-level, not just prompt-level):
+  ├─ 3. Build initial prompt: ## Retrieved context (RAG) + engineer's description
+  │
+  ├─ 4. Action-request check (code-level, not just prompt-level):
   │      matches "roll back / deploy / hotfix / restart / ..."?
   │        yes → model.invoke() with NO tools bound (tool call impossible)
   │        no  → model.bind_tools([query_metrics, query_logs]).invoke()
   │
-  ├─ 4. If the model requested tool(s): execute each via a real MCP round
+  ├─ 5. If the model requested tool(s): execute each via a real MCP round
   │      trip to mcp_server/server.py (stdio, one long-lived session),
-  │      append ToolMessage(s), invoke again -- repeat up to MAX_TOOL_ROUNDS
+  │      append ToolMessage(s), invoke again -- repeat up to MAX_TOOL_ROUNDS.
+  │      If MAX_TOOL_ROUNDS is hit with calls still pending, force a final
+  │      textual answer from whatever was gathered (self.model.invoke(),
+  │      no tools) instead of looping further.
   │
-  ├─ 5. Contradiction check -- only if query_metrics was actually called;
+  ├─ 6. Contradiction check -- only if query_metrics was actually called;
   │      folds a [Contradiction] flag back in for one more invoke if found
   │
-  ├─ 6. Final LLM response → Groq (GROQ_MODEL, default llama-3.1-8b-instant) → cited answer
+  ├─ 7. Final LLM response → Groq (GROQ_MODEL) → cited answer. Citation rules
+  │      (prompts/system_prompt.md) require translating each RAG block's
+  │      `[Source: <file> | Section: <section>]` tag into `[Runbook: ...]` /
+  │      `[Postmortem: ...]` in the answer -- weaker models are prone to
+  │      dropping this and answering from tool results alone.
   │
-  └─ 7. UI: badge (live|unavailable|not_queried) + trace
-         panel (which tool(s) were called, with what args/results) + response
+  └─ 8. UI (app.py `triage()`, wrapped in try/except so a failure returns a
+         clear error instead of leaving a stale prior response on screen):
+         badge (live|unavailable|not_queried) + trace panel (HyDE queries,
+         RAG chunks, which tool(s) were called with what args/results, and a
+         per-phase timing breakdown from get_trace()["timings"]) + response
 ```
 
 ## Key architectural constraints
@@ -179,9 +224,13 @@ User query
    entirely for matching messages, making a tool call structurally impossible for them, not just
    discouraged. Guardrails work even if the vector store or MCP server is unavailable.
 
-2. **RAG is pre-computed and always-on** — `ingestion.py` chunks and embeds all documents
-   offline. At query time, only the user's query is embedded (~100ms) and searched (~50ms).
-   Unlike the two telemetry tools, RAG retrieval is not agent-decided — it runs on every query.
+2. **RAG is pre-computed and always-on, but query-time retrieval is HyDE-driven, not a single
+   search** — `ingestion.py` chunks and embeds all documents offline. At query time, the
+   engineer's raw query is first expanded by the LLM into 6 targeted queries (HyDE), each
+   searched independently, then deduplicated/ranked/capped (see `src/incident_pilot.py` above).
+   This costs one extra LLM call and up to 18 vector searches per turn, versus a single
+   `similarity_search()` — a deliberate accuracy-for-latency/token-budget tradeoff. Unlike the
+   two telemetry tools, RAG retrieval itself is not agent-decided — it always runs.
 
 3. **Telemetry is agent-decided, via MCP** — the LLM itself decides whether/which of
    `query_metrics`/`query_logs` to call, based on tool docstrings + system-prompt guidance (see
@@ -199,15 +248,31 @@ User query
 
 5. **The `phase` field in synthetic metrics** (`baseline`/`climbing`/`plateau`/`recovering`) is a dataset-layer annotation only — it is stripped before returning data to the agent so the agent doesn't see ground-truth labels it should be inferring.
 
+6. **Citation labels require an explicit translation step the model must perform** — the RAG
+   block presents chunks as `[Source: <filename> | Section: <section>]`, but
+   `prompts/system_prompt.md` requires the final answer to cite `[Runbook: ...]` /
+   `[Postmortem: ...]` instead. The system prompt now spells out that mapping and a worked
+   example (previously it didn't, and models — especially smaller ones — would often paraphrase
+   the runbook in prose without the bracket tag, or ignore RAG entirely in favor of live tool
+   results). Still worth re-verifying whenever the prompt or a stronger model is available.
+
+7. **`GROQ_MODEL` has two real options with separate daily (TPD) budgets, and both are easy to
+   exhaust during iterative testing**: `llama-3.3-70b-versatile` (better instruction-following,
+   100k TPD) and `llama-3.1-8b-instant` (weaker, but its own separate budget — and only a 6000
+   tokens-per-minute *per-request* ceiling, which the capped/ranked RAG block above exists to fit
+   under). Set in `.env`; check `docker exec incident-pilot printenv GROQ_MODEL` to confirm what
+   the running container actually has, and rebuild+restart after changing it.
+
 ## Corpus layout
 
 | Directory | Contents |
 |---|---|
-| `synthetic-data/runbooks/` | Service runbooks for RAG indexing |
-| `synthetic-data/postmorterms/` | Past-incident postmortems for RAG indexing |
+| `synthetic-data/runbooks/` | Service runbooks (markdown) — indexed for RAG |
+| `synthetic-data/postmorterms/` | Past-incident postmortems (markdown) — indexed for RAG |
+| `synthetic-data/real-runbooks/` | PDF/DOCX runbooks — extractors exist in `ingestion.py` but this source is currently unused |
 | `synthetic-data/vectorstore/` | ChromaDB (built by `ingestion.py`, not committed) |
 | `flask-generator/` | Docker FastAPI incident simulator |
-| `docs/` | Generation prompts and team context |
+| `docs/` | Generation prompts, team context, and design notes (incl. `hyde_semantic_chunking_design.md`, `rag_chunking_retrieval_design.md`) |
 | `prompts/` | System prompt and generation prompts |
 
 ## Dependency management
@@ -228,6 +293,6 @@ Key constraints:
 - Frontmatter: only `service` and `doc_type` fields — no extras.
 - Separate triage paths for `p99-latency-high` vs `error-rate-high`.
 - No rollback/deploy instructions in the runbook.
-- Every `##` section must be self-contained (file is chunked on headers).
+- Every `##` section should still be self-contained — `SemanticChunker` splits on meaning shifts rather than headers, but well-scoped sections make for cleaner chunk boundaries either way.
 - Postmortem titles by symptom/impact, not root cause.
 - Action items table: max 2 rows, independently verifiable.
