@@ -306,6 +306,18 @@ def _format_trace(trace: dict) -> str:
         source_badge = "🔴 **Unavailable — unable to reach Prometheus/Loki**"
     parts.append(f"**Data source:** {source_badge}")
 
+    # --- Timing breakdown (where the time actually went) ---
+    timings = trace.get("timings", [])
+    if timings:
+        phase_lines = [
+            f"  `{t['phase']}`: {t['duration_ms']}ms"
+            for t in timings if t["phase"] != "total"
+        ]
+        total = next((t["duration_ms"] for t in timings if t["phase"] == "total"), None)
+        if total is not None:
+            phase_lines.append(f"  **total:** {total}ms")
+        parts.append("**Timing breakdown:**\n" + "\n".join(phase_lines))
+
     # --- Tool calls (agent-decided) ---
     tool_calls = trace.get("tool_calls", [])
     if tool_calls:
@@ -417,7 +429,29 @@ def triage(incident_description: str, service: str = "(all services)"):
     # The agent itself decides whether/which telemetry tool(s) to call --
     # no pre-fetch here, so the badge below reflects what actually happened
     # this turn, not a fetch we forced regardless of the question.
-    response = pilot.query(incident_description, service=target)
+    try:
+        response = pilot.query(incident_description, service=target)
+    except Exception as exc:
+        # Without this, an exception here leaves Gradio's output components
+        # showing whatever the *previous successful* query rendered, plus a
+        # generic toast -- easy to misread as "this response errored" when
+        # it's actually stale content from an earlier turn.
+        logger.exception("Triage request [req=%s] failed", request_id)
+        msg = str(exc)
+        hint = ""
+        if any(s in msg for s in ("rate_limit", "429", "413", "tokens per")):
+            hint = (
+                "\n\nThis is a Groq rate/size limit (per-minute or per-day token "
+                "budget), not a bug in the agent -- wait a bit and retry, or switch "
+                "`GROQ_MODEL` in `.env` if the daily quota is exhausted."
+            )
+        error_text = f"⚠️ **Query failed** [req={request_id}]\n\n`{type(exc).__name__}: {exc}`{hint}"
+        error_trace = (
+            f"**Request ID (this query):** `{request_id}`\n\n"
+            "**Status:** failed before a response was produced -- see error above / container logs."
+        )
+        return error_text, error_trace
+
     trace = pilot.get_trace()
     live_source = trace.get("source", "not_queried")
 

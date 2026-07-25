@@ -483,8 +483,8 @@ class TestHydeQueryExpansion(unittest.TestCase):
             metadata={"source": "checkout_api_runbook.pdf", "section": "Escalation"},
         )
         mock_vectorstore = MagicMock()
-        mock_vectorstore.similarity_search.side_effect = [
-            [shared_doc], [shared_doc, unique_doc],
+        mock_vectorstore.similarity_search_with_score.side_effect = [
+            [(shared_doc, 0.5)], [(shared_doc, 0.2), (unique_doc, 0.3)],
         ]
         pilot.vectorstore = mock_vectorstore
 
@@ -493,7 +493,7 @@ class TestHydeQueryExpansion(unittest.TestCase):
         self.assertEqual(len(chunks), 2)
         contents = {c["content"] for c in chunks}
         self.assertEqual(contents, {"Restart the pool.", "Escalate to database on-call."})
-        self.assertEqual(mock_vectorstore.similarity_search.call_count, 2)
+        self.assertEqual(mock_vectorstore.similarity_search_with_score.call_count, 2)
 
     def test_retrieve_with_queries_empty_when_vectorstore_unavailable(self):
         pilot = self._make_pilot(AIMessage(content="pool exhaustion", tool_calls=[]))
@@ -510,14 +510,40 @@ class TestHydeQueryExpansion(unittest.TestCase):
             metadata={"source": "s.pdf", "section": "sec"},
         )
         mock_vectorstore = MagicMock()
-        mock_vectorstore.similarity_search.return_value = [doc]
+        mock_vectorstore.similarity_search_with_score.return_value = [(doc, 0.1)]
         pilot.vectorstore = mock_vectorstore
 
         chunks = pilot.retrieve("checkout is slow")
 
-        # 3 queries (original + 2 expanded lines), one similarity_search call each
-        self.assertEqual(mock_vectorstore.similarity_search.call_count, 3)
+        # 3 queries (original + 2 expanded lines), one similarity_search_with_score call each
+        self.assertEqual(mock_vectorstore.similarity_search_with_score.call_count, 3)
         self.assertEqual(len(chunks), 1)  # same doc returned every time -> deduped
+
+    def test_retrieve_with_queries_ranks_by_score_and_caps(self):
+        """More unique chunks than MAX_RETRIEVED_CHUNKS (6) come back --
+        only the 6 lowest-distance (most similar) survive, best first,
+        regardless of the order the vector store returned them in."""
+        pilot = self._make_pilot(AIMessage(content="pool exhaustion", tool_calls=[]))
+
+        scores = [0.9, 0.1, 0.5, 0.7, 0.2, 0.8, 0.3, 0.6]
+        docs_with_scores = [
+            (
+                Document(page_content=f"chunk {i}", metadata={"source": "s.pdf", "section": f"sec{i}"}),
+                score,
+            )
+            for i, score in enumerate(scores)
+        ]
+        mock_vectorstore = MagicMock()
+        mock_vectorstore.similarity_search_with_score.return_value = docs_with_scores
+        pilot.vectorstore = mock_vectorstore
+
+        chunks = pilot._retrieve_with_queries(["one query"])
+
+        self.assertEqual(len(chunks), 6)
+        self.assertEqual(
+            [c["content"] for c in chunks],
+            ["chunk 1", "chunk 4", "chunk 6", "chunk 2", "chunk 7", "chunk 3"],
+        )
 
 
 if __name__ == "__main__":

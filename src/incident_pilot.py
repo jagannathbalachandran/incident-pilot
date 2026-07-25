@@ -29,6 +29,7 @@ import json
 import logging
 import os
 import re
+import time
 from pathlib import Path
 from typing import Optional
 
@@ -127,6 +128,15 @@ VECTORSTORE_DIR = Path(__file__).parent.parent / "synthetic-data" / "vectorstore
 # Chunks retrieved per HyDE-expanded query. 6 queries (5 expanded + original)
 # x 3 chunks = up to 18 raw hits before dedup.
 CHUNKS_PER_QUERY = 3
+
+# Hard cap on chunks actually sent to the LLM: the top-N by similarity
+# score after the HyDE union/dedup below, not a raw truncation. Needed
+# regardless of CHUNKS_PER_QUERY: an uncapped RAG block (up to 18 raw hits,
+# commonly 12-15 unique after dedup) plus the system prompt and tool
+# schemas reliably exceeds llama-3.1-8b-instant's 6000 tokens-per-minute
+# ceiling on the very first call, before any tool round trip -- this bounds
+# it while still keeping the multi-angle HyDE search itself unrestricted.
+MAX_RETRIEVED_CHUNKS = 6
 
 # HyDE expansion prompt -- separate from the triage system prompt so the LLM
 # is in "query generator" mode, not "triage copilot" mode.
@@ -264,8 +274,16 @@ class IncidentPilot:
         return all_queries[:6]  # cap to avoid runaway expansion
 
     def _retrieve_with_queries(self, queries: list[str]) -> list[dict]:
-        """Run a pre-computed list of queries against the vector store and
-        deduplicate the results by content.
+        """Run a pre-computed list of queries against the vector store,
+        deduplicate by content (keeping each chunk's best -- lowest-distance
+        -- score across every query it matched), rank the deduplicated set
+        by that score, and return the top ``MAX_RETRIEVED_CHUNKS``.
+
+        Straight truncation in query order would let the first query or two
+        exhaust the cap, silently dropping chunks found by later HyDE
+        angles (e.g. "escalation path") even when they're a better match
+        than something found earlier -- ranking by actual similarity score
+        picks the best chunks regardless of which query surfaced them.
 
         Each result dict has: source (filename), section (heading), content.
         """
@@ -273,23 +291,28 @@ class IncidentPilot:
             logger.warning("_retrieve_with_queries() called but vectorstore is unavailable")
             return []
 
-        seen: set[int] = set()
-        chunks: list[dict] = []
+        # fingerprint -> (best_score, chunk_dict). Chroma's default distance
+        # metric is L2 (lower = more similar), so "best" is the minimum.
+        best_by_fingerprint: dict[int, tuple[float, dict]] = {}
         for query in queries:
-            docs = self.vectorstore.similarity_search(query, k=CHUNKS_PER_QUERY)
-            for doc in docs:
+            results = self.vectorstore.similarity_search_with_score(query, k=CHUNKS_PER_QUERY)
+            for doc, score in results:
                 fingerprint = hash(doc.page_content)
-                if fingerprint in seen:
-                    continue
-                seen.add(fingerprint)
-                chunks.append({
-                    "source": doc.metadata.get("source", "unknown"),
-                    "section": doc.metadata.get("section", "unknown"),
-                    "content": doc.page_content,
-                })
+                existing = best_by_fingerprint.get(fingerprint)
+                if existing is None or score < existing[0]:
+                    best_by_fingerprint[fingerprint] = (score, {
+                        "source": doc.metadata.get("source", "unknown"),
+                        "section": doc.metadata.get("section", "unknown"),
+                        "content": doc.page_content,
+                    })
 
-        logger.info("RAG retrieved %d unique chunk(s) across %d quer(y/ies): %s",
-                     len(chunks), len(queries),
+        ranked = sorted(best_by_fingerprint.values(), key=lambda pair: pair[0])
+        total_unique = len(ranked)
+        chunks = [chunk for _score, chunk in ranked[:MAX_RETRIEVED_CHUNKS]]
+
+        logger.info("RAG retrieved %d unique chunk(s) across %d quer(y/ies), "
+                     "ranked by similarity (top %d sent to LLM): %s",
+                     total_unique, len(queries), len(chunks),
                      [f"{c['source']} / {c['section']}" for c in chunks])
         return chunks
 
@@ -494,6 +517,11 @@ class IncidentPilot:
             ("not_queried" means the model answered without calling either
             tool; "unavailable" means a tool was called but Prometheus/Loki
             could not be reached)
+          - ``timings``: list of ``{phase, duration_ms}`` for every phase run
+            this turn (hyde_expansion, rag_retrieval, initial_llm_call,
+            tool_round_N_execution/_llm_call, contradiction_check, ...,
+            ending with a ``total`` entry) -- lets the UI show where time
+            actually went.
         """
         return (self._last_trace or {}).copy()
 
@@ -525,11 +553,26 @@ class IncidentPilot:
         req_id = get_request_id() or "-"
         logger.info("Processing query [req=%s]: '%s...'", req_id, user_input[:80])
 
+        query_start = time.perf_counter()
+        timings: list[dict] = []
+
+        def _mark(label: str, phase_start: float) -> None:
+            elapsed_ms = round((time.perf_counter() - phase_start) * 1000, 1)
+            timings.append({"phase": label, "duration_ms": elapsed_ms})
+            logger.info("[req=%s] %s complete (%.1fms)", req_id, label, elapsed_ms)
+
         # 1. RAG retrieval -- always runs. HyDE (_expand_query) turns the
         #    engineer's raw description into targeted runbook-vocabulary
         #    searches before hitting the vector store.
+        logger.info("[req=%s] HyDE expansion starting", req_id)
+        t0 = time.perf_counter()
         queries = self._expand_query(user_input)
+        _mark("hyde_expansion", t0)
+
+        logger.info("[req=%s] RAG retrieval starting", req_id)
+        t0 = time.perf_counter()
         chunks = self._retrieve_with_queries(queries)
+        _mark("rag_retrieval", t0)
         rag_block = self._format_context(chunks)
 
         scope_hint = (
@@ -562,12 +605,21 @@ class IncidentPilot:
 
         # 3. Let the model decide whether/which tools to call (when bound),
         #    executing real MCP round trips for whatever it asks for.
-        logger.debug("Calling LLM [req=%s] (tools_bound=%s)", req_id, not action_request)
+        logger.info("[req=%s] initial LLM call starting (tools_bound=%s)", req_id, not action_request)
+        t0 = time.perf_counter()
         response = model_for_this_turn.invoke(messages)
+        _mark("initial_llm_call", t0)
+
+        requested_calls = [
+            f"{c['name']}({c.get('args', {})})"
+            for c in (getattr(response, "tool_calls", None) or [])
+        ]
+        logger.info("[req=%s] tool calls required: %s", req_id, requested_calls or "none")
 
         rounds = 0
         while getattr(response, "tool_calls", None) and rounds < MAX_TOOL_ROUNDS:
             messages.append(response)
+            t0 = time.perf_counter()
             for call in response.tool_calls:
                 result = self._call_mcp_tool(call["name"], call["args"])
                 tool_trace.append({"name": call["name"], "args": call["args"], "result": result})
@@ -576,8 +628,11 @@ class IncidentPilot:
                 elif call["name"] == "query_logs":
                     last_logs_result = result
                 messages.append(ToolMessage(content=json.dumps(result), tool_call_id=call["id"]))
+            _mark(f"tool_round_{rounds + 1}_execution", t0)
             rounds += 1
+            t0 = time.perf_counter()
             response = model_for_this_turn.invoke(messages)
+            _mark(f"tool_round_{rounds}_llm_call", t0)
 
         if getattr(response, "tool_calls", None):
             # Hit MAX_TOOL_ROUNDS while the model still wanted to call
@@ -589,11 +644,15 @@ class IncidentPilot:
                 content="Give your final answer now, using only the tool "
                         "results already gathered above."
             ))
+            t0 = time.perf_counter()
             response = self.model.invoke(messages)
+            _mark("forced_final_llm_call", t0)
 
         # 4. Contradiction check -- only meaningful if query_metrics was
         #    actually called; fold the flag back in if one was found.
+        t0 = time.perf_counter()
         contradiction_warning = self._detect_contradictions(user_input, last_metrics_result or {})
+        _mark("contradiction_check", t0)
         if contradiction_warning:
             logger.info("[req=%s] contradiction detected: %s", req_id, contradiction_warning)
             messages.append(response)
@@ -602,10 +661,15 @@ class IncidentPilot:
                         f"Revise your answer to explicitly flag this, per your "
                         f"[Contradiction] citation rule."
             ))
+            t0 = time.perf_counter()
             response = model_for_this_turn.invoke(messages)
+            _mark("contradiction_revision_llm_call", t0)
 
-        logger.info("LLM response received [req=%s] (%d characters, %d tool call(s))",
-                     req_id, len(response.content), len(tool_trace))
+        total_ms = round((time.perf_counter() - query_start) * 1000, 1)
+        timings.append({"phase": "total", "duration_ms": total_ms})
+        logger.info("[req=%s] LLM response done -- %d characters, %d tool call(s), "
+                     "total %.1fms across %d phase(s)",
+                     req_id, len(response.content), len(tool_trace), total_ms, len(timings) - 1)
 
         # --- Build trace for the UI ---
         # query_metrics already returns condensed {name, service, endpoint,
@@ -627,6 +691,7 @@ class IncidentPilot:
             "augmented_input": augmented_input,
             "source": self._merge_source(last_metrics_result, last_logs_result),
             "contradiction": contradiction_warning,
+            "timings": timings,
             "request_id": get_request_id(),
         }
 
