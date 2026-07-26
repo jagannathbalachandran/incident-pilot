@@ -1,0 +1,15 @@
+.venv
+.git
+__pycache__
+*.pyc
+.env
+.DS_Store
+.venv/
+node_modules
+*.egg-info
+dist
+build
+.sass-cache
+*.swp
+*.swo
+*~

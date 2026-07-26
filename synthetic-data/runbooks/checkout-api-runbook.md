@@ -27,7 +27,7 @@ different investigations, not the same checklist.
 
 3. **Check downstream dependency latency.**
    Panel: `checkout-api > Downstream Latency (by dependency)`
-   checkout-api calls `payment-gateway-svc`, `inventory-svc`, and
+   checkout-api calls `payment-service`, `inventory-svc`, and
    `fraud-scoring-svc` synchronously — a slow call to any of these shows up
    in checkout-api's own latency even though checkout-api itself is healthy.
    - If a dependency's p99 spiked at the same time as checkout-api's → this
@@ -68,9 +68,12 @@ are both fundamentally slowness-driven.
 
 ## Known Issue #1: Postgres connection pool exhaustion
 
-**Symptom signature:** p99 latency climbs gradually over 10-20 minutes (not a
-sudden step), `active_connections` pinned at `max_connections`, application
-logs show `could not obtain connection from pool within <N>ms`.
+**Symptom signature:** p99 latency climbs gradually (not a sudden step) as
+`active_connections` rises from baseline toward `max_connections`, pins at
+the ceiling while pressure holds, then eases back down as pressure
+subsides. Application logs show `could not obtain connection from pool
+within <N>ms`.
+
 
 **Mechanism:** each pod holds a fixed pool of pre-opened database connections
 (cheaper than opening one per request). When every connection is checked out
