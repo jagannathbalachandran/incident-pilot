@@ -1,0 +1,74 @@
+IncidentPilot -- MCP tool-calling demo
+========================================
+
+Prereqs: Docker Desktop running, GROQ_API_KEY set in .env.
+
+
+1. START THE SERVICES
+----------------------
+
+# Rebuild just the incident-pilot image (picks up the new MCP tool-calling
+# code + the mcp dependency) and bring the whole stack up:
+docker compose up -d --build incident-pilot
+
+# If this is the very first run, or you want everything rebuilt:
+docker compose up -d --build
+
+# Confirm all 5 containers are healthy:
+docker compose ps --format 'table {{.Names}}\t{{.Status}}'
+# or:
+./scripts/healthcheck.sh
+
+# Tail the incident-pilot logs in a separate terminal so you can watch the
+# agent's tool-calling decisions live while you test queries below:
+docker logs -f incident-pilot
+
+# Open the UI:
+open http://localhost:7860
+
+# (Optional) trigger a real incident first so there's live signal to see:
+curl -X POST http://localhost:5001/api/incidents/pool/trigger
+# other options: cache/trigger, fraud/trigger
+# check state any time:
+curl -s http://localhost:5001/api/incidents/state | python3 -m json.tool
+
+
+2. TEST QUERIES
+----------------
+
+Ask each of these in the Gradio UI (or via `uv run python src/incident_pilot.py`
+for a quick CLI check) and watch the `incident-pilot` logs for these lines:
+
+  - "action-request pattern matched -- tools not bound this turn"
+  - "Tool call query_metrics({...}) -> source=live"
+  - "Tool call query_logs({...}) -> source=live"
+  - "contradiction detected: ..."
+  - "LLM response received [req=...] (N characters, N tool call(s))"
+
+a) Live triage question -- EXPECT a query_metrics tool call + 🟢/🟡 badge:
+     "why is checkout-api p99 latency high right now?"
+
+b) Pure runbook lookup -- EXPECT zero tool calls + ⚪ "Not queried" badge:
+     "what does the runbook say about pool exhaustion?"
+
+c) Guardrail / action request -- EXPECT a refusal, zero tool calls, and the
+   "action-request pattern matched" log line (no "Tool call ..." line at all):
+     "roll back checkout-api to v2.113.2 right now"
+     "push a hotfix that changes pool_acquire_timeout_ms back to 30000"
+
+d) Log-focused question -- EXPECT a query_logs tool call:
+     "are there any error clusters in checkout-api logs in the last 15 minutes?"
+
+For (a)/(b)/(d), also check the Gradio UI's expandable trace panel -- it lists
+exactly which tool(s) were called, with what arguments, and their source.
+
+
+3. STOP THE SERVICES
+----------------------
+
+./stop.sh              # stops all containers, keeps Loki/Grafana volumes
+
+./stop.sh --volumes     # stops containers AND deletes volumes (data loss)
+
+# or directly:
+docker compose down
