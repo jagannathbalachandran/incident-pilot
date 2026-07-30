@@ -133,6 +133,14 @@ def _safety_split(chunks: list[Document]) -> list[Document]:
     Secondary pass: split any chunk that exceeds MAX_CHUNK_CHARS.
     Splits at paragraph → sentence → word boundaries, never mid-sentence.
     Preserves all metadata from the parent chunk.
+
+    Each resulting piece is tagged with metadata["parent_content"] holding
+    the full, undivided text it was split from. The split pieces still get
+    embedded and searched individually (so each stays within the embedding
+    model's token limit), but retrieval can substitute parent_content back
+    in instead of the piece's own (possibly incomplete) content -- so a
+    chunk that had to be split for length still returns its full original
+    section, not a fragment missing its header or cut mid-instruction.
     """
     splitter = RecursiveCharacterTextSplitter(
         chunk_size=MAX_CHUNK_CHARS,
@@ -144,7 +152,10 @@ def _safety_split(chunks: list[Document]) -> list[Document]:
         if len(doc.page_content) <= MAX_CHUNK_CHARS:
             result.append(doc)
         else:
-            result.extend(splitter.split_documents([doc]))
+            pieces = splitter.split_documents([doc])
+            for piece in pieces:
+                piece.metadata["parent_content"] = doc.page_content
+            result.extend(pieces)
     return result
 
 

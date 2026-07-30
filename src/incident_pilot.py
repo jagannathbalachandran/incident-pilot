@@ -297,13 +297,23 @@ class IncidentPilot:
         for query in queries:
             results = self.vectorstore.similarity_search_with_score(query, k=CHUNKS_PER_QUERY)
             for doc, score in results:
-                fingerprint = hash(doc.page_content)
+                # A chunk too long for the embedding model's token limit was
+                # split at ingestion time; parent_content (if present) is
+                # the full pre-split text, so this returns the whole
+                # original section instead of a fragment that may be
+                # missing its header or cut mid-instruction. Fingerprint on
+                # this same value (not the raw sub-chunk) so sibling pieces
+                # of one split parent collapse to a single entry instead of
+                # each occupying a separate MAX_RETRIEVED_CHUNKS slot with
+                # identical content.
+                content = doc.metadata.get("parent_content", doc.page_content)
+                fingerprint = hash(content)
                 existing = best_by_fingerprint.get(fingerprint)
                 if existing is None or score < existing[0]:
                     best_by_fingerprint[fingerprint] = (score, {
                         "source": doc.metadata.get("source", "unknown"),
                         "section": doc.metadata.get("section", "unknown"),
-                        "content": doc.page_content,
+                        "content": content,
                     })
 
         ranked = sorted(best_by_fingerprint.values(), key=lambda pair: pair[0])
