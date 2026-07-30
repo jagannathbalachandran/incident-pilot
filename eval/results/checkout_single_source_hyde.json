@@ -1,0 +1,21 @@
+{
+  "description": "IncidentPilot.retrieve() (HyDE expand -> search -> dedupe -> rank -> cap 6) run against rag_qrels.py's 2 checkout-api entries. Summary-level only (query/precision/recall/reciprocal_rank + means) -- per-chunk retrieved content not persisted for this run, unlike the no-HyDE baseline, to avoid a second paid Groq run purely to re-capture chunk-level detail already reported in conversation.",
+  "k_cap": 6,
+  "results": [
+    {
+      "query": "checkout-api p99 latency climbing, active_connections pinned at max_connections",
+      "precision": 0.333,
+      "recall": 1.000,
+      "reciprocal_rank": 1.000
+    },
+    {
+      "query": "checkout-api error rate climbing with 400 Bad Request responses",
+      "precision": 0.167,
+      "recall": 1.000,
+      "reciprocal_rank": 1.000
+    }
+  ],
+  "mean_precision": 0.250,
+  "mean_recall": 1.000,
+  "mrr": 1.000
+}

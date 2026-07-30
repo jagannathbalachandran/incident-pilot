@@ -32,7 +32,10 @@ class RetrievedChunk(BaseModel):
     source: str
     section: str
     content: str
-    score: float
+    # None for chunks retrieved via IncidentPilot.retrieve() (the HyDE
+    # pipeline) -- its public return type doesn't expose a similarity
+    # score, unlike task-1's direct similarity_search_with_score() calls.
+    score: float | None = None
     rank: int
 
 
