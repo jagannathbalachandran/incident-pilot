@@ -6,9 +6,10 @@ Indexes two corpora: runbooks (synthetic-data/runbooks/) and postmortems
 chunked with SemanticChunker, which embeds sentences and splits where
 meaning shifts significantly (not a plain ## header split).
 
-  Safety net: any chunk exceeding MAX_CHUNK_CHARS is further split by
+  Safety net: any chunk exceeding MAX_CHUNK_TOKENS (measured with the same
+  tokenizer the embedding model uses) is further split by
   RecursiveCharacterTextSplitter to stay within the embedding model's
-  token limit (all-MiniLM-L6-v2 max: 256 tokens ≈ 1000 chars).
+  token limit (all-MiniLM-L6-v2 max: 256 tokens).
 
   The embedding model is created once and shared between SemanticChunker
   and ChromaDB to avoid loading it twice.
@@ -30,6 +31,7 @@ from langchain_experimental.text_splitter import SemanticChunker
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_chroma import Chroma
+from transformers import AutoTokenizer
 
 # ---------------------------------------------------------------------------
 # Paths
@@ -41,9 +43,15 @@ RUNBOOKS_DIR       = REPO_ROOT / "synthetic-data" / "runbooks"
 REAL_RUNBOOKS_DIR  = REPO_ROOT / "synthetic-data" / "real-runbooks"
 VECTORSTORE_DIR    = REPO_ROOT / "synthetic-data" / "vectorstore"
 
-# Chunks exceeding this length get a secondary split so they stay within the
-# embedding model's token limit.
-MAX_CHUNK_CHARS = 1500
+# Must match the embedding model used in build_vectorstore() below -- this
+# tokenizer is what determines whether a chunk will get truncated at embed
+# time, so it's also what has to decide whether a chunk needs splitting.
+EMBEDDING_TOKENIZER = AutoTokenizer.from_pretrained("sentence-transformers/all-MiniLM-L6-v2")
+
+# all-MiniLM-L6-v2's hard limit is 256 tokens (sentence_bert_config.json).
+# Chunks exceeding this get a secondary split so they stay within it.
+# Set below 256 to leave headroom for [CLS]/[SEP] and tokenizer edge cases.
+MAX_CHUNK_TOKENS = 230
 
 # ---------------------------------------------------------------------------
 # Markdown helpers
@@ -130,9 +138,12 @@ def extract_real_runbook_text(path: Path) -> str:
 
 def _safety_split(chunks: list[Document]) -> list[Document]:
     """
-    Secondary pass: split any chunk that exceeds MAX_CHUNK_CHARS.
-    Splits at paragraph → sentence → word boundaries, never mid-sentence.
-    Preserves all metadata from the parent chunk.
+    Secondary pass: split any chunk that exceeds MAX_CHUNK_TOKENS, measured
+    with the embedding model's own tokenizer -- not a character-count proxy,
+    which under- or overestimates badly on paths/identifiers/commands (e.g.
+    "infra/pgbouncer/payment-pool.ini") that tokenize less efficiently than
+    prose. Splits at paragraph → sentence → word boundaries, never
+    mid-sentence. Preserves all metadata from the parent chunk.
 
     Each resulting piece is tagged with metadata["parent_content"] holding
     the full, undivided text it was split from. The split pieces still get
@@ -142,14 +153,16 @@ def _safety_split(chunks: list[Document]) -> list[Document]:
     chunk that had to be split for length still returns its full original
     section, not a fragment missing its header or cut mid-instruction.
     """
-    splitter = RecursiveCharacterTextSplitter(
-        chunk_size=MAX_CHUNK_CHARS,
-        chunk_overlap=100,
+    splitter = RecursiveCharacterTextSplitter.from_huggingface_tokenizer(
+        EMBEDDING_TOKENIZER,
+        chunk_size=MAX_CHUNK_TOKENS,
+        chunk_overlap=30,
         separators=["\n\n", "\n", ". ", " "],
     )
     result = []
     for doc in chunks:
-        if len(doc.page_content) <= MAX_CHUNK_CHARS:
+        n_tokens = len(EMBEDDING_TOKENIZER(doc.page_content)["input_ids"])
+        if n_tokens <= MAX_CHUNK_TOKENS:
             result.append(doc)
         else:
             pieces = splitter.split_documents([doc])
