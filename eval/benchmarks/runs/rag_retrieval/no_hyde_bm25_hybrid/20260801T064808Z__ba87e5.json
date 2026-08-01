@@ -15,7 +15,8 @@
     "ingested_at": "2026-08-01T06:45:53Z",
     "vectorstore_git_commit": "8a2e6753e1254d8cea8be3b1a229dd2ef70ab8a8",
     "hybrid_bm25": 1,
-    "rrf_k": 60
+    "rrf_k": 60,
+    "corpus": "runbooks+postmorterms"
   },
   "suites": {
     "single_source_queries": {

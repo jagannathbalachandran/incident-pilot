@@ -16,7 +16,8 @@
     "question_embedding_count": 66,
     "hnsw_space": "cosine",
     "ingested_at": "2026-08-01T09:17:39Z",
-    "hype_vectorstore_git_commit": "4303a8a187cc4b8fe87cef8dbffc29b3c972ad4e"
+    "hype_vectorstore_git_commit": "4303a8a187cc4b8fe87cef8dbffc29b3c972ad4e",
+    "corpus": "runbooks+postmorterms"
   },
   "suites": {
     "single_source_queries": {

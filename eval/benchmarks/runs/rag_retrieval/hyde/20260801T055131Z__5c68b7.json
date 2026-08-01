@@ -15,7 +15,8 @@
     "ingested_at": "2026-08-01T05:49:32Z",
     "vectorstore_git_commit": "bca26caf84f6caa533722b07fcd2ba21c7046898",
     "llm_model": "llama-3.1-8b-instant",
-    "hyde_temperature": 0
+    "hyde_temperature": 0,
+    "corpus": "runbooks+postmorterms"
   },
   "suites": {
     "single_source_queries": {

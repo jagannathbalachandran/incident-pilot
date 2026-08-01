@@ -1431,5 +1431,8 @@
       "max": 0.6410569105691057,
       "n": 1
     }
+  },
+  "pipeline_config": {
+    "corpus": "runbooks+postmorterms"
   }
 }

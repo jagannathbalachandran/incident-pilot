@@ -1432,5 +1432,8 @@
   },
   "baseline_id": "baseline__rag_retrieval__no_hyde__e37d0d6c",
   "promoted_at": "2026-08-01T05:09:29Z",
-  "superseded_baseline_id": "baseline__rag_retrieval__no_hyde__92ee26ff"
+  "superseded_baseline_id": "baseline__rag_retrieval__no_hyde__92ee26ff",
+  "pipeline_config": {
+    "corpus": "runbooks+postmorterms"
+  }
 }
