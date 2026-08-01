@@ -1,12 +1,22 @@
 {
-  "run_id": "rag_retrieval__hyde__2fb5ddfe",
+  "run_id": "rag_retrieval__hyde__24cbe5ca",
   "category": "rag_retrieval",
   "mode": "hyde",
-  "created_at": "2026-08-01T05:10:41Z",
+  "created_at": "2026-08-01T05:51:31Z",
   "repeats": 1,
-  "git_commit": "75835fcf50f0a6cc90d7323382df7064536775bc",
+  "git_commit": "bca26caf84f6caa533722b07fcd2ba21c7046898",
   "git_dirty": true,
-  "description": "post token-chunking-fix baseline, temperature=0 HyDE (commit 75835fc), retrieval_config tracked",
+  "description": "pipeline_config tracking added (commit d0cfb63)",
+  "pipeline_config": {
+    "embedding_model": "all-MiniLM-L6-v2",
+    "max_chunk_tokens": 230,
+    "hnsw_space": "l2 (chroma implicit default)",
+    "chunk_count": 55,
+    "ingested_at": "2026-08-01T05:49:32Z",
+    "vectorstore_git_commit": "bca26caf84f6caa533722b07fcd2ba21c7046898",
+    "llm_model": "llama-3.1-8b-instant",
+    "hyde_temperature": 0
+  },
   "suites": {
     "single_source_queries": {
       "suite_name": "single_source_queries",
@@ -336,7 +346,7 @@
               "metrics": {
                 "precision": 0.16666666666666666,
                 "recall": 1.0,
-                "reciprocal_rank": 0.5
+                "reciprocal_rank": 1.0
               }
             },
             {
@@ -406,7 +416,7 @@
               "query": "checkout-api might be a bad request or schema issue",
               "identifier": "checkout-api-runbook.md",
               "metrics": {
-                "precision": 0.16666666666666666,
+                "precision": 0.2,
                 "recall": 1.0,
                 "reciprocal_rank": 1.0
               }
@@ -548,18 +558,18 @@
             }
           ],
           "summary_metrics": {
-            "precision": 0.2111111111111111,
+            "precision": 0.21203703703703702,
             "recall": 0.9444444444444444,
-            "reciprocal_rank": 0.6467592592592593
+            "reciprocal_rank": 0.6606481481481482
           }
         }
       ],
       "aggregate_metrics": {
         "precision": {
-          "mean": 0.2111111111111111,
+          "mean": 0.21203703703703702,
           "std": 0.0,
-          "min": 0.2111111111111111,
-          "max": 0.2111111111111111,
+          "min": 0.21203703703703702,
+          "max": 0.21203703703703702,
           "n": 1
         },
         "recall": {
@@ -570,10 +580,10 @@
           "n": 1
         },
         "reciprocal_rank": {
-          "mean": 0.6467592592592593,
+          "mean": 0.6606481481481482,
           "std": 0.0,
-          "min": 0.6467592592592593,
-          "max": 0.6467592592592593,
+          "min": 0.6606481481481482,
+          "max": 0.6606481481481482,
           "n": 1
         }
       },
@@ -870,10 +880,10 @@
             "n": 1
           },
           "reciprocal_rank": {
-            "mean": 0.5,
+            "mean": 1.0,
             "std": 0.0,
-            "min": 0.5,
-            "max": 0.5,
+            "min": 1.0,
+            "max": 1.0,
             "n": 1
           }
         },
@@ -1040,10 +1050,10 @@
         },
         "checkout-api might be a bad request or schema issue": {
           "precision": {
-            "mean": 0.16666666666666666,
+            "mean": 0.2,
             "std": 0.0,
-            "min": 0.16666666666666666,
-            "max": 0.16666666666666666,
+            "min": 0.2,
+            "max": 0.2,
             "n": 1
           },
           "recall": {
@@ -1411,10 +1421,10 @@
   },
   "summary": {
     "precision": {
-      "mean": 0.2056910569105691,
+      "mean": 0.20650406504065041,
       "std": 0.0,
-      "min": 0.2056910569105691,
-      "max": 0.2056910569105691,
+      "min": 0.20650406504065041,
+      "max": 0.20650406504065041,
       "n": 1
     },
     "recall": {
@@ -1425,14 +1435,14 @@
       "n": 1
     },
     "reciprocal_rank": {
-      "mean": 0.6410569105691057,
+      "mean": 0.6532520325203253,
       "std": 0.0,
-      "min": 0.6410569105691057,
-      "max": 0.6410569105691057,
+      "min": 0.6532520325203253,
+      "max": 0.6532520325203253,
       "n": 1
     }
   },
-  "baseline_id": "baseline__rag_retrieval__hyde__c04b85a2",
-  "promoted_at": "2026-08-01T05:10:41Z",
-  "superseded_baseline_id": "baseline__rag_retrieval__hyde__d9ef3de5"
+  "baseline_id": "baseline__rag_retrieval__hyde__bb022086",
+  "promoted_at": "2026-08-01T05:56:40Z",
+  "superseded_baseline_id": "baseline__rag_retrieval__hyde__c04b85a2"
 }

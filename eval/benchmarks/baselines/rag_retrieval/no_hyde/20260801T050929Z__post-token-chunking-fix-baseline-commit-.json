@@ -1,20 +1,12 @@
 {
-  "run_id": "rag_retrieval__no_hyde__d2d88085",
+  "run_id": "rag_retrieval__no_hyde__18b582d1",
   "category": "rag_retrieval",
   "mode": "no_hyde",
-  "created_at": "2026-08-01T05:50:21Z",
+  "created_at": "2026-08-01T05:09:29Z",
   "repeats": 1,
-  "git_commit": "bca26caf84f6caa533722b07fcd2ba21c7046898",
+  "git_commit": "75835fcf50f0a6cc90d7323382df7064536775bc",
   "git_dirty": true,
-  "description": "pipeline_config tracking added (commit d0cfb63)",
-  "pipeline_config": {
-    "embedding_model": "all-MiniLM-L6-v2",
-    "max_chunk_tokens": 230,
-    "hnsw_space": "l2 (chroma implicit default)",
-    "chunk_count": 55,
-    "ingested_at": "2026-08-01T05:49:32Z",
-    "vectorstore_git_commit": "bca26caf84f6caa533722b07fcd2ba21c7046898"
-  },
+  "description": "post token-chunking-fix baseline (commit 75835fc), retrieval_config tracked",
   "suites": {
     "single_source_queries": {
       "suite_name": "single_source_queries",
@@ -1438,7 +1430,7 @@
       "n": 1
     }
   },
-  "baseline_id": "baseline__rag_retrieval__no_hyde__7c32e9c9",
-  "promoted_at": "2026-08-01T05:56:35Z",
-  "superseded_baseline_id": "baseline__rag_retrieval__no_hyde__e37d0d6c"
+  "baseline_id": "baseline__rag_retrieval__no_hyde__e37d0d6c",
+  "promoted_at": "2026-08-01T05:09:29Z",
+  "superseded_baseline_id": "baseline__rag_retrieval__no_hyde__92ee26ff"
 }
