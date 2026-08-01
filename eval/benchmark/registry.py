@@ -41,6 +41,13 @@ from incident_pilot import (  # noqa: E402
     MAX_RETRIEVED_CHUNKS as _HYDE_MAX_RETRIEVED_CHUNKS,
 )
 
+from hybrid_retrieval import (  # noqa: E402
+    HybridIndex,
+    RRF_K as _RRF_K,
+    evaluate_query_hyde_hybrid as _evaluate_query_hyde_hybrid,
+    evaluate_query_no_hyde_hybrid as _evaluate_query_no_hyde_hybrid,
+)
+
 VECTORSTORE_DIR = Path(__file__).resolve().parent.parent.parent / "synthetic-data" / "vectorstore"
 INGESTION_METADATA_PATH = VECTORSTORE_DIR / "_ingestion_metadata.json"
 
@@ -64,13 +71,21 @@ def _load_ingestion_metadata() -> dict:
 
 def pipeline_config_for(mode: str, ctx: Any) -> dict:
     """Run-level config -- same for every suite in a run, so this is called
-    once per run in core.py, not per suite. no_hyde's ctx is a Chroma
-    vectorstore; hyde's ctx is an IncidentPilot instance.
+    once per run in core.py, not per suite. ctx shape depends on mode:
+    no_hyde -> Chroma vectorstore; hyde -> IncidentPilot; no_hyde_bm25_hybrid
+    -> HybridIndex; hyde_bm25_hybrid -> (IncidentPilot, HybridIndex).
     """
     config = _load_ingestion_metadata()
     if mode == "hyde":
         config["llm_model"] = ctx.model.model
         config["hyde_temperature"] = _HYDE_TEMPERATURE
+    elif mode == "hyde_bm25_hybrid":
+        pilot, _index = ctx
+        config["llm_model"] = pilot.model.model
+        config["hyde_temperature"] = _HYDE_TEMPERATURE
+    if "bm25" in mode:
+        config["hybrid_bm25"] = True
+        config["rrf_k"] = _RRF_K
     return config
 
 
@@ -90,6 +105,20 @@ def _setup_incident_pilot() -> Any:
 
 
 def _teardown_incident_pilot(pilot: Any) -> None:
+    pilot.close()
+
+
+def _setup_no_hyde_hybrid() -> HybridIndex:
+    return HybridIndex(_load_vectorstore())
+
+
+def _setup_hyde_hybrid() -> tuple:
+    pilot = _setup_incident_pilot()
+    return (pilot, HybridIndex(pilot.vectorstore))
+
+
+def _teardown_hyde_hybrid(ctx: tuple) -> None:
+    pilot, _index = ctx
     pilot.close()
 
 
@@ -132,6 +161,40 @@ SUITES: dict[tuple[str, str, str], SuiteSpec] = {
         retrieval_config={
             "chunks_per_query": _HYDE_CHUNKS_PER_QUERY,
             "max_retrieved_chunks": _HYDE_MAX_RETRIEVED_CHUNKS,
+        },
+    ),
+    ("rag_retrieval", "no_hyde_bm25_hybrid", "single_source_queries"): SuiteSpec(
+        qrels=_SINGLE_SOURCE_QRELS,
+        setup=_setup_no_hyde_hybrid,
+        evaluate_one=_evaluate_query_no_hyde_hybrid,
+        retrieval_config={"k": _NO_HYDE_K, "rrf_k": _RRF_K},
+    ),
+    ("rag_retrieval", "no_hyde_bm25_hybrid", "synthetic_robustness_queries"): SuiteSpec(
+        qrels=_ROBUSTNESS_CHECKOUT_QRELS,
+        setup=_setup_no_hyde_hybrid,
+        evaluate_one=_evaluate_query_no_hyde_hybrid,
+        retrieval_config={"k": _NO_HYDE_K, "rrf_k": _RRF_K},
+    ),
+    ("rag_retrieval", "hyde_bm25_hybrid", "single_source_queries"): SuiteSpec(
+        qrels=_SINGLE_SOURCE_QRELS,
+        setup=_setup_hyde_hybrid,
+        evaluate_one=_evaluate_query_hyde_hybrid,
+        teardown=_teardown_hyde_hybrid,
+        retrieval_config={
+            "chunks_per_query": _HYDE_CHUNKS_PER_QUERY,
+            "max_retrieved_chunks": _HYDE_MAX_RETRIEVED_CHUNKS,
+            "rrf_k": _RRF_K,
+        },
+    ),
+    ("rag_retrieval", "hyde_bm25_hybrid", "synthetic_robustness_queries"): SuiteSpec(
+        qrels=_ROBUSTNESS_CHECKOUT_QRELS,
+        setup=_setup_hyde_hybrid,
+        evaluate_one=_evaluate_query_hyde_hybrid,
+        teardown=_teardown_hyde_hybrid,
+        retrieval_config={
+            "chunks_per_query": _HYDE_CHUNKS_PER_QUERY,
+            "max_retrieved_chunks": _HYDE_MAX_RETRIEVED_CHUNKS,
+            "rrf_k": _RRF_K,
         },
     ),
 }
