@@ -31,6 +31,15 @@ from rag_qrels import QRELS as _SINGLE_SOURCE_QRELS  # noqa: E402
 from rag_qrels_synthetic_robustness_checkout_hyde import (  # noqa: E402
     QRELS as _ROBUSTNESS_CHECKOUT_QRELS,
 )
+from rag_qrels_synthetic_robustness import QRELS as _ROBUSTNESS_ALL_QRELS  # noqa: E402
+
+# auth-service/listing-service/payment-service only (36 queries) -- checkout-api's
+# 36 are already covered by synthetic_robustness_queries above; this suite is
+# scoped to what's genuinely new (never run through HyDE before) rather than
+# re-testing checkout-api a second time at extra Groq cost for no new signal.
+_ROBUSTNESS_OTHER_SERVICES_QRELS = [
+    q for q in _ROBUSTNESS_ALL_QRELS if q.expected_source != "checkout-api-runbook.md"
+]
 
 # Module-level import only -- reads CHUNKS_PER_QUERY/MAX_RETRIEVED_CHUNKS without
 # instantiating IncidentPilot (which needs GROQ_API_KEY and spawns an MCP
@@ -143,6 +152,16 @@ SUITES: dict[tuple[str, str, str], SuiteSpec] = {
         evaluate_one=_evaluate_query_no_hyde,
         retrieval_config={"k": _NO_HYDE_K},
     ),
+    # auth-service/listing-service/payment-service only (36 queries) --
+    # a separate suite from synthetic_robustness_queries (checkout-only, 36)
+    # rather than redefining it, so existing baselines that reference the
+    # checkout suite by name stay meaningful/comparable across time.
+    ("rag_retrieval", "no_hyde", "synthetic_robustness_other_services"): SuiteSpec(
+        qrels=_ROBUSTNESS_OTHER_SERVICES_QRELS,
+        setup=_load_vectorstore,
+        evaluate_one=_evaluate_query_no_hyde,
+        retrieval_config={"k": _NO_HYDE_K},
+    ),
     ("rag_retrieval", "hyde", "single_source_queries"): SuiteSpec(
         qrels=_SINGLE_SOURCE_QRELS,
         setup=_setup_incident_pilot,
@@ -155,6 +174,16 @@ SUITES: dict[tuple[str, str, str], SuiteSpec] = {
     ),
     ("rag_retrieval", "hyde", "synthetic_robustness_queries"): SuiteSpec(
         qrels=_ROBUSTNESS_CHECKOUT_QRELS,
+        setup=_setup_incident_pilot,
+        evaluate_one=_evaluate_query_hyde,
+        teardown=_teardown_incident_pilot,
+        retrieval_config={
+            "chunks_per_query": _HYDE_CHUNKS_PER_QUERY,
+            "max_retrieved_chunks": _HYDE_MAX_RETRIEVED_CHUNKS,
+        },
+    ),
+    ("rag_retrieval", "hyde", "synthetic_robustness_other_services"): SuiteSpec(
+        qrels=_ROBUSTNESS_OTHER_SERVICES_QRELS,
         setup=_setup_incident_pilot,
         evaluate_one=_evaluate_query_hyde,
         teardown=_teardown_incident_pilot,

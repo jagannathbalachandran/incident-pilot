@@ -24,7 +24,9 @@ from core import (
 
 
 def cmd_run(args: argparse.Namespace) -> None:
-    run = run_benchmark(args.category, args.mode, repeats=args.repeats, description=args.description)
+    run = run_benchmark(
+        args.category, args.mode, repeats=args.repeats, description=args.description, suites=args.suite
+    )
     print_run_report(run)
 
     baseline = load_current_baseline(args.category, args.mode)
@@ -78,6 +80,9 @@ def main() -> None:
     p_run.add_argument("--repeats", type=int, default=1)
     p_run.add_argument("--description", default="")
     p_run.add_argument("--promote", action="store_true", help="Promote this run as the new baseline")
+    p_run.add_argument("--suite", action="append", default=None,
+                        help="Limit to specific suite(s), e.g. --suite synthetic_robustness_other_services. "
+                             "Repeatable. Omit to run every suite registered for this (category, mode).")
     p_run.set_defaults(func=cmd_run)
 
     p_promote = sub.add_parser("promote", help="Promote the most recent run as the new baseline")

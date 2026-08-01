@@ -62,10 +62,18 @@ def _slugify(text: str, max_len: int = 40) -> str:
 # run
 # ---------------------------------------------------------------------------
 
-def run_benchmark(category: str, mode: str, repeats: int = 1, description: str = "") -> BenchmarkRun:
+def run_benchmark(
+    category: str, mode: str, repeats: int = 1, description: str = "", suites: list[str] | None = None
+) -> BenchmarkRun:
     specs = suites_for(category, mode)
     if not specs:
         raise ValueError(f"No suites registered for category={category!r} mode={mode!r}")
+    if suites is not None:
+        unknown = set(suites) - set(specs)
+        if unknown:
+            raise ValueError(f"Unknown suite(s) {unknown} for category={category!r} mode={mode!r}; "
+                              f"available: {sorted(specs)}")
+        specs = {name: spec for name, spec in specs.items() if name in suites}
 
     suite_aggregates: dict[str, SuiteAggregate] = {}
     # pooled_by_repeat[r] = list of QueryMetricRecord across all suites for repeat r
@@ -192,21 +200,48 @@ def list_baselines(category: str, mode: str) -> list[tuple[str, BaselineRecord]]
 # promote
 # ---------------------------------------------------------------------------
 
+def _recompute_pooled_summary(suites: dict) -> dict[str, MetricStats]:
+    """Query-level pooling across suites (each query's own per-repeat mean
+    counts once), matching how compare()'s pooled summary is computed --
+    used here because a merged baseline's suite set may not match any single
+    run's suite set (see promote()'s merge below), so run.summary alone
+    can't be reused as-is.
+    """
+    pooled: dict[str, list[float]] = {}
+    for suite in suites.values():
+        for metrics in suite.per_query_aggregate.values():
+            for metric_key, stats in metrics.items():
+                pooled.setdefault(metric_key, []).append(stats.mean)
+    return {k: MetricStats.from_values(v) for k, v in pooled.items()}
+
+
 def promote(run: BenchmarkRun, description: str = "") -> BaselineRecord:
+    """Promotes `run` as the new baseline. If `run` only covers some suites
+    (e.g. a --suite-scoped run, to avoid re-testing already-covered suites
+    at extra Groq cost), the other suites are carried over unchanged from
+    the current baseline rather than dropped -- a partial run must never
+    silently shrink the baseline.
+    """
     baseline_dir = BASELINES_ROOT / run.category / run.mode
     baseline_dir.mkdir(parents=True, exist_ok=True)
     current_path = baseline_dir / CURRENT_BASELINE_NAME
 
     superseded_id = None
+    merged_suites = dict(run.suites)
     if current_path.exists():
         old = BaselineRecord.model_validate_json(current_path.read_text())
         superseded_id = old.baseline_id
+        merged_suites = {**old.suites, **run.suites}  # run's suites win on overlap
         demoted_name = f"{old.promoted_at.replace(':', '').replace('-', '')}__{_slugify(old.description)}.json"
         current_path.rename(baseline_dir / demoted_name)
         print(f"Demoted previous baseline to {baseline_dir / demoted_name}")
 
+    run_data = run.model_dump()
+    run_data["suites"] = merged_suites
+    run_data["summary"] = _recompute_pooled_summary(merged_suites)
+
     baseline = BaselineRecord(
-        **run.model_dump(),
+        **run_data,
         baseline_id=f"baseline__{run.category}__{run.mode}__{uuid.uuid4().hex[:8]}",
         superseded_baseline_id=superseded_id,
     )

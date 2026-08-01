@@ -6,7 +6,7 @@
   "repeats": 1,
   "git_commit": "c211292608f6c5055e3a181cd348885ab6761e34",
   "git_dirty": true,
-  "description": "add synthetic_robustness_other_services (auth/listing/payment, 36 queries)",
+  "description": "added synthetic_robustness_other_services suite (auth/listing/payment, 36 queries)",
   "pipeline_config": {
     "embedding_model": "all-MiniLM-L6-v2",
     "max_chunk_tokens": 230,
@@ -2613,27 +2613,24 @@
   "summary": {
     "precision": {
       "mean": 0.3203463203463203,
-      "std": 0.21110277645431355,
-      "min": 0.0,
-      "max": 0.6666666666666666,
-      "n": 77
+      "std": 0.0,
+      "min": 0.3203463203463203,
+      "max": 0.3203463203463203,
+      "n": 1
     },
     "recall": {
       "mean": 0.7727272727272727,
-      "std": 0.4151783730687216,
-      "min": 0.0,
-      "max": 1.0,
-      "n": 77
+      "std": 0.0,
+      "min": 0.7727272727272727,
+      "max": 0.7727272727272727,
+      "n": 1
     },
     "reciprocal_rank": {
       "mean": 0.5974025974025974,
-      "std": 0.4085580257762096,
-      "min": 0.0,
-      "max": 1.0,
-      "n": 77
+      "std": 0.0,
+      "min": 0.5974025974025974,
+      "max": 0.5974025974025974,
+      "n": 1
     }
-  },
-  "baseline_id": "baseline__rag_retrieval__no_hyde__7b1464c8",
-  "promoted_at": "2026-08-01T07:46:11Z",
-  "superseded_baseline_id": "baseline__rag_retrieval__no_hyde__7c32e9c9"
+  }
 }
