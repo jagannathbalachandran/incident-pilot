@@ -237,6 +237,7 @@ def compare(baseline: BaselineRecord, new_run: BenchmarkRun) -> dict:
         "baseline_pipeline_config": baseline.pipeline_config,
         "new_pipeline_config": new_run.pipeline_config,
     }
+    pooled_vals: dict[str, dict[str, tuple[list[float], list[float]]]] = {}
 
     for suite_name, new_suite in new_run.suites.items():
         if suite_name not in baseline.suites:
@@ -266,6 +267,7 @@ def compare(baseline: BaselineRecord, new_run: BenchmarkRun) -> dict:
 
         metric_keys = next(iter(new_suite.per_query_aggregate.values())).keys()
         deltas = {}
+        pooled_vals[suite_name] = {}
         for metric_key in metric_keys:
             base_vals = [base_suite.per_query_aggregate[q][metric_key].mean for q in overlap]
             new_vals = [new_suite.per_query_aggregate[q][metric_key].mean for q in overlap]
@@ -276,6 +278,11 @@ def compare(baseline: BaselineRecord, new_run: BenchmarkRun) -> dict:
                 "new": new_mean,
                 "delta": new_mean - base_mean,
             }
+            # Raw per-query values, not the suite mean -- kept so the pooled
+            # summary below can average across every overlapping QUERY, not
+            # every suite (a 5-query suite must not get equal weight to a
+            # 36-query suite in the pooled number).
+            pooled_vals[suite_name][metric_key] = (base_vals, new_vals)
 
         report["suites"][suite_name] = {
             "status": "compared",
@@ -291,14 +298,16 @@ def compare(baseline: BaselineRecord, new_run: BenchmarkRun) -> dict:
         }
 
     # Pooled summary: only over suites that were actually compared, pooling
-    # their overlapping-query values (still weighted naturally by query count).
-    compared = {name: r for name, r in report["suites"].items() if r["status"] == "compared"}
-    if compared:
-        metric_keys = next(iter(compared.values()))["deltas"].keys()
+    # every overlapping QUERY's raw value across suites -- a 36-query suite
+    # naturally outweighs a 5-query suite here, unlike averaging suite means.
+    if pooled_vals:
+        metric_keys = next(iter(pooled_vals.values())).keys()
         summary_deltas = {}
         for metric_key in metric_keys:
-            base_mean = statistics.fmean(r["deltas"][metric_key]["baseline"] for r in compared.values())
-            new_mean = statistics.fmean(r["deltas"][metric_key]["new"] for r in compared.values())
+            all_base_vals = [v for suite in pooled_vals.values() for v in suite[metric_key][0]]
+            all_new_vals = [v for suite in pooled_vals.values() for v in suite[metric_key][1]]
+            base_mean = statistics.fmean(all_base_vals)
+            new_mean = statistics.fmean(all_new_vals)
             summary_deltas[metric_key] = {"baseline": base_mean, "new": new_mean, "delta": new_mean - base_mean}
         report["summary"] = summary_deltas
 
