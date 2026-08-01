@@ -46,6 +46,15 @@ RUNBOOKS_DIR       = REPO_ROOT / "synthetic-data" / "runbooks"
 REAL_RUNBOOKS_DIR  = REPO_ROOT / "synthetic-data" / "real-runbooks"
 VECTORSTORE_DIR    = REPO_ROOT / "synthetic-data" / "vectorstore"
 
+# latest_runbooks/ mixes markdown with PDF/DOCX (some services' runbooks
+# converted to PDF/DOCX, others left as markdown, plus one new PDF-only
+# service) to simulate format diversity within one corpus, while keeping
+# runbook *content* identical to runbooks/ where a service has both. Built
+# into its own vectorstore -- never touches the default runbooks/vectorstore/
+# pair -- so the two corpora can be compared side by side.
+LATEST_RUNBOOKS_DIR         = REPO_ROOT / "synthetic-data" / "latest_runbooks"
+VECTORSTORE_LATEST_RUNBOOKS_DIR = REPO_ROOT / "synthetic-data" / "vectorstore_latest_runbooks"
+
 # Single source of truth for the embedding model -- used for the tokenizer
 # below, the HuggingFaceEmbeddings instance in build_vectorstore(), and the
 # ingestion metadata stamp, so there's exactly one place to change for a
@@ -81,6 +90,28 @@ def load_markdown_documents(directories: list[Path]) -> list[tuple[str, str]]:
         for path in sorted(directory.glob("*.md")):
             text = path.read_text()
             docs.append((path.name, strip_frontmatter(text)))
+    return docs
+
+
+def load_mixed_format_documents(directory: Path) -> list[tuple[str, str]]:
+    """Return (filename, content) for every file in a directory that mixes
+    markdown with PDF/DOCX -- e.g. synthetic-data/latest_runbooks/, which
+    exists to simulate format diversity within one corpus (some services'
+    runbooks converted to PDF/DOCX, others left as markdown). Dispatches per
+    file on extension: .md goes through strip_frontmatter like
+    load_markdown_documents; everything else goes through
+    extract_real_runbook_text (defined below this point in the file, hence
+    the local import-free forward reference via module-level lookup at call
+    time -- both functions live in this module).
+    """
+    docs = []
+    for path in sorted(directory.iterdir()):
+        if not path.is_file() or path.name.startswith("."):
+            continue
+        if path.suffix.lower() == ".md":
+            docs.append((path.name, strip_frontmatter(path.read_text())))
+        else:
+            docs.append((path.name, extract_real_runbook_text(path)))
     return docs
 
 
@@ -230,7 +261,7 @@ def _git_commit() -> str:
         return "unknown"
 
 
-def _write_ingestion_metadata(vectorstore: Chroma, chunk_count: int) -> None:
+def _write_ingestion_metadata(vectorstore: Chroma, chunk_count: int, vectorstore_dir: Path, corpus_tag: str) -> None:
     """Stamp what actually built this vectorstore, written once at ingestion
     time -- not re-derived later from whatever ingestion.py's constants
     currently say, which could have changed since without a re-ingest. This
@@ -242,6 +273,7 @@ def _write_ingestion_metadata(vectorstore: Chroma, chunk_count: int) -> None:
     hnsw_space = (collection_metadata or {}).get("hnsw:space", "l2 (chroma implicit default)")
 
     metadata = {
+        "corpus": corpus_tag,
         "embedding_model": EMBEDDING_MODEL_NAME,
         "max_chunk_tokens": MAX_CHUNK_TOKENS,
         "hnsw_space": hnsw_space,
@@ -249,17 +281,27 @@ def _write_ingestion_metadata(vectorstore: Chroma, chunk_count: int) -> None:
         "git_commit": _git_commit(),
         "ingested_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
     }
-    path = VECTORSTORE_DIR / "_ingestion_metadata.json"
+    path = vectorstore_dir / "_ingestion_metadata.json"
     path.write_text(json.dumps(metadata, indent=2))
     print(f"Ingestion metadata saved to {path}")
 
 
-def build_vectorstore() -> Chroma:
+def build_vectorstore(
+    runbooks_dir: Path = RUNBOOKS_DIR,
+    vectorstore_dir: Path = VECTORSTORE_DIR,
+    corpus_tag: str = "runbooks+postmorterms",
+) -> Chroma:
+    """Defaults reproduce today's exact behavior (runbooks/ + postmorterms/
+    -> vectorstore/). Pass a different runbooks_dir (e.g. latest_runbooks/,
+    which mixes markdown with PDF/DOCX to simulate format diversity) and
+    vectorstore_dir to build a separate, parallel corpus without touching
+    the default one -- e.g. for an eval-only comparison.
+    """
     # 1. Wipe and recreate
-    if VECTORSTORE_DIR.exists():
-        shutil.rmtree(VECTORSTORE_DIR)
-        print(f"Deleted existing vector store at {VECTORSTORE_DIR}")
-    VECTORSTORE_DIR.mkdir(parents=True)
+    if vectorstore_dir.exists():
+        shutil.rmtree(vectorstore_dir)
+        print(f"Deleted existing vector store at {vectorstore_dir}")
+    vectorstore_dir.mkdir(parents=True)
 
     # 2. Create embedding model once — shared by SemanticChunker and ChromaDB
     print(f"\nLoading embedding model ({EMBEDDING_MODEL_NAME})...")
@@ -270,10 +312,13 @@ def build_vectorstore() -> Chroma:
 
     all_chunks: list[Document] = []
 
-    # 3. Runbook corpus (markdown) — semantic chunking, not a ## header split
-    print("\nRunbook corpus (semantic chunking):")
-    if RUNBOOKS_DIR.exists():
-        for filename, content in load_markdown_documents([RUNBOOKS_DIR]):
+    # 3. Runbook corpus — semantic chunking, not a ## header split. Mixed-
+    # format loader handles markdown transparently (identical output to
+    # load_markdown_documents for an all-.md directory) and dispatches
+    # PDF/DOCX through the extractors above when present.
+    print(f"\nRunbook corpus ({runbooks_dir.name}, semantic chunking):")
+    if runbooks_dir.exists():
+        for filename, content in load_mixed_format_documents(runbooks_dir):
             chunks = semantic_chunk_text(content, filename, embeddings)
             all_chunks.extend(chunks)
             print(f"  {filename}: {len(chunks)} chunks [semantic]")
@@ -293,11 +338,11 @@ def build_vectorstore() -> Chroma:
     vectorstore = Chroma.from_documents(
         documents=all_chunks,
         embedding=embeddings,
-        persist_directory=str(VECTORSTORE_DIR),
+        persist_directory=str(vectorstore_dir),
     )
-    print(f"Vector store saved to {VECTORSTORE_DIR}")
+    print(f"Vector store saved to {vectorstore_dir}")
 
-    _write_ingestion_metadata(vectorstore, chunk_count=len(all_chunks))
+    _write_ingestion_metadata(vectorstore, chunk_count=len(all_chunks), vectorstore_dir=vectorstore_dir, corpus_tag=corpus_tag)
     return vectorstore
 
 
@@ -319,8 +364,17 @@ def query_vectorstore(vectorstore: Chroma, query: str, k: int = 3) -> None:
 # ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
+    import sys
+
     print("=== IncidentPilot Ingestion Pipeline ===")
-    vectorstore = build_vectorstore()
+    if len(sys.argv) > 1 and sys.argv[1] == "--latest-runbooks":
+        vectorstore = build_vectorstore(
+            runbooks_dir=LATEST_RUNBOOKS_DIR,
+            vectorstore_dir=VECTORSTORE_LATEST_RUNBOOKS_DIR,
+            corpus_tag="latest_runbooks+postmorterms",
+        )
+    else:
+        vectorstore = build_vectorstore()
     query_vectorstore(vectorstore, "connection pool exhaustion in checkout service")
     query_vectorstore(vectorstore, "high latency in checkout service")
     query_vectorstore(vectorstore, "error in add to cart service")

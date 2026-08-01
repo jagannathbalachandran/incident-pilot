@@ -63,22 +63,32 @@ from hype_retrieval import (  # noqa: E402
     load_hype_vectorstore as _load_hype_vectorstore,
 )
 
+# Reuse the exact same path constants ingestion.py/hype_ingestion.py define,
+# rather than re-deriving them here, so there's exactly one place each path
+# is defined.
+from hype_ingestion import (  # noqa: E402
+    LATEST_RUNBOOKS_VECTORSTORE_DIR as _LATEST_RUNBOOKS_VECTORSTORE_DIR,
+    HYPE_LATEST_RUNBOOKS_VECTORSTORE_DIR as _HYPE_LATEST_RUNBOOKS_VECTORSTORE_DIR,
+)
+
 VECTORSTORE_DIR = Path(__file__).resolve().parent.parent.parent / "synthetic-data" / "vectorstore"
 INGESTION_METADATA_PATH = VECTORSTORE_DIR / "_ingestion_metadata.json"
 HYPE_VECTORSTORE_DIR = Path(__file__).resolve().parent.parent.parent / "synthetic-data" / "vectorstore_hype"
 HYPE_INGESTION_METADATA_PATH = HYPE_VECTORSTORE_DIR / "_ingestion_metadata.json"
+LATEST_RUNBOOKS_INGESTION_METADATA_PATH = _LATEST_RUNBOOKS_VECTORSTORE_DIR / "_ingestion_metadata.json"
+HYPE_LATEST_RUNBOOKS_INGESTION_METADATA_PATH = _HYPE_LATEST_RUNBOOKS_VECTORSTORE_DIR / "_ingestion_metadata.json"
 
 
-def _load_ingestion_metadata() -> dict:
+def _load_ingestion_metadata(path: Path = INGESTION_METADATA_PATH, label: str = "ingestion_metadata") -> dict:
     """What actually built the vectorstore currently on disk, stamped by
     ingestion.py at ingestion time -- not re-derived from current code,
     which could be ahead of what's actually been ingested. Missing file
     means either the vectorstore predates this tracking or ingestion.py
     hasn't been re-run since -- both worth surfacing, not silently ignoring.
     """
-    if not INGESTION_METADATA_PATH.exists():
-        return {"ingestion_metadata": "unavailable (vectorstore predates metadata tracking, or hasn't been rebuilt since)"}
-    raw = json.loads(INGESTION_METADATA_PATH.read_text())
+    if not path.exists():
+        return {label: f"unavailable ({path} missing or predates metadata tracking)"}
+    raw = json.loads(path.read_text())
     # Disambiguate from the benchmark run's own top-level git_commit (the
     # commit the *benchmark* ran at, not the commit the *vectorstore* was
     # built at -- these can differ if the vectorstore wasn't rebuilt).
@@ -86,14 +96,13 @@ def _load_ingestion_metadata() -> dict:
     return raw
 
 
-def _load_hype_ingestion_metadata() -> dict:
-    """Same idea as _load_ingestion_metadata, but for the separate HyPE
-    vector store -- distinct fields (llm_model/questions_per_chunk used to
-    generate the question embeddings, not the main store's chunking config).
-    """
-    if not HYPE_INGESTION_METADATA_PATH.exists():
-        return {"hype_ingestion_metadata": "unavailable (vectorstore_hype missing or predates metadata tracking)"}
-    raw = json.loads(HYPE_INGESTION_METADATA_PATH.read_text())
+def _load_hype_ingestion_metadata(path: Path = HYPE_INGESTION_METADATA_PATH) -> dict:
+    """Same idea as _load_ingestion_metadata, but for a HyPE vector store --
+    distinct fields (llm_model/questions_per_chunk used to generate the
+    question embeddings, not the main store's chunking config)."""
+    if not path.exists():
+        return {"hype_ingestion_metadata": f"unavailable ({path} missing or predates metadata tracking)"}
+    raw = json.loads(path.read_text())
     raw["hype_vectorstore_git_commit"] = raw.pop("git_commit", "unknown")
     return raw
 
@@ -101,12 +110,20 @@ def _load_hype_ingestion_metadata() -> dict:
 def pipeline_config_for(mode: str, ctx: Any) -> dict:
     """Run-level config -- same for every suite in a run, so this is called
     once per run in core.py, not per suite. ctx shape depends on mode:
-    no_hyde -> Chroma vectorstore; hyde -> IncidentPilot; no_hyde_bm25_hybrid
-    -> HybridIndex; hyde_bm25_hybrid -> (IncidentPilot, HybridIndex);
-    hype -> Chroma vectorstore (the separate HyPE collection).
+    no_hyde -> Chroma vectorstore; hyde/hyde_latest_runbooks -> IncidentPilot;
+    no_hyde_bm25_hybrid -> HybridIndex; hyde_bm25_hybrid -> (IncidentPilot,
+    HybridIndex); hype/hype_latest_runbooks -> Chroma vectorstore (the
+    separate HyPE collection).
     """
     if mode == "hype":
         return _load_hype_ingestion_metadata()
+    if mode == "hype_latest_runbooks":
+        return _load_hype_ingestion_metadata(HYPE_LATEST_RUNBOOKS_INGESTION_METADATA_PATH)
+    if mode == "hyde_latest_runbooks":
+        config = _load_ingestion_metadata(LATEST_RUNBOOKS_INGESTION_METADATA_PATH)
+        config["llm_model"] = ctx.model.model
+        config["hyde_temperature"] = _HYDE_TEMPERATURE
+        return config
     config = _load_ingestion_metadata()
     if mode == "hyde":
         config["llm_model"] = ctx.model.model
@@ -136,6 +153,12 @@ def _setup_incident_pilot() -> Any:
     return IncidentPilot()
 
 
+def _setup_incident_pilot_latest_runbooks() -> Any:
+    from incident_pilot import IncidentPilot  # noqa: E402
+
+    return IncidentPilot(vectorstore_dir=_LATEST_RUNBOOKS_VECTORSTORE_DIR)
+
+
 def _teardown_incident_pilot(pilot: Any) -> None:
     pilot.close()
 
@@ -147,6 +170,10 @@ def _setup_no_hyde_hybrid() -> HybridIndex:
 def _setup_hyde_hybrid() -> tuple:
     pilot = _setup_incident_pilot()
     return (pilot, HybridIndex(pilot.vectorstore))
+
+
+def _load_hype_vectorstore_latest_runbooks() -> Any:
+    return _load_hype_vectorstore(_HYPE_LATEST_RUNBOOKS_VECTORSTORE_DIR)
 
 
 def _teardown_hyde_hybrid(ctx: tuple) -> None:
@@ -234,6 +261,58 @@ SUITES: dict[tuple[str, str, str], SuiteSpec] = {
     ("rag_retrieval", "hype", "synthetic_robustness_other_services"): SuiteSpec(
         qrels=_ROBUSTNESS_OTHER_SERVICES_QRELS,
         setup=_load_hype_vectorstore,
+        evaluate_one=_evaluate_query_hype,
+        retrieval_config={"k": _HYPE_K},
+    ),
+    # latest_runbooks corpus (mixed markdown/PDF/DOCX, see
+    # synthetic-data/latest_runbooks/) -- same suites, same scoring, only the
+    # underlying vector store differs, for a direct format-variance
+    # comparison against the all-markdown runbooks/ corpus above.
+    ("rag_retrieval", "hyde_latest_runbooks", "single_source_queries"): SuiteSpec(
+        qrels=_SINGLE_SOURCE_QRELS,
+        setup=_setup_incident_pilot_latest_runbooks,
+        evaluate_one=_evaluate_query_hyde,
+        teardown=_teardown_incident_pilot,
+        retrieval_config={
+            "chunks_per_query": _HYDE_CHUNKS_PER_QUERY,
+            "max_retrieved_chunks": _HYDE_MAX_RETRIEVED_CHUNKS,
+        },
+    ),
+    ("rag_retrieval", "hyde_latest_runbooks", "synthetic_robustness_queries"): SuiteSpec(
+        qrels=_ROBUSTNESS_CHECKOUT_QRELS,
+        setup=_setup_incident_pilot_latest_runbooks,
+        evaluate_one=_evaluate_query_hyde,
+        teardown=_teardown_incident_pilot,
+        retrieval_config={
+            "chunks_per_query": _HYDE_CHUNKS_PER_QUERY,
+            "max_retrieved_chunks": _HYDE_MAX_RETRIEVED_CHUNKS,
+        },
+    ),
+    ("rag_retrieval", "hyde_latest_runbooks", "synthetic_robustness_other_services"): SuiteSpec(
+        qrels=_ROBUSTNESS_OTHER_SERVICES_QRELS,
+        setup=_setup_incident_pilot_latest_runbooks,
+        evaluate_one=_evaluate_query_hyde,
+        teardown=_teardown_incident_pilot,
+        retrieval_config={
+            "chunks_per_query": _HYDE_CHUNKS_PER_QUERY,
+            "max_retrieved_chunks": _HYDE_MAX_RETRIEVED_CHUNKS,
+        },
+    ),
+    ("rag_retrieval", "hype_latest_runbooks", "single_source_queries"): SuiteSpec(
+        qrels=_SINGLE_SOURCE_QRELS,
+        setup=_load_hype_vectorstore_latest_runbooks,
+        evaluate_one=_evaluate_query_hype,
+        retrieval_config={"k": _HYPE_K},
+    ),
+    ("rag_retrieval", "hype_latest_runbooks", "synthetic_robustness_queries"): SuiteSpec(
+        qrels=_ROBUSTNESS_CHECKOUT_QRELS,
+        setup=_load_hype_vectorstore_latest_runbooks,
+        evaluate_one=_evaluate_query_hype,
+        retrieval_config={"k": _HYPE_K},
+    ),
+    ("rag_retrieval", "hype_latest_runbooks", "synthetic_robustness_other_services"): SuiteSpec(
+        qrels=_ROBUSTNESS_OTHER_SERVICES_QRELS,
+        setup=_load_hype_vectorstore_latest_runbooks,
         evaluate_one=_evaluate_query_hype,
         retrieval_config={"k": _HYPE_K},
     ),

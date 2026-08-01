@@ -22,6 +22,7 @@ from typing import Any
 from rank_bm25 import BM25Okapi
 
 from schemas import QrelItem, QueryEvalResult, RetrievedChunk
+from source_aliases import matches_expected_source
 
 RRF_K = 60
 
@@ -100,7 +101,7 @@ def _build_result(qrel: QrelItem, ranked_contents: list[str], content_to_source:
     matched_phrases: list[str] = []
     first_relevant_rank = None
     for chunk in retrieved:
-        if chunk.source != qrel.expected_source:
+        if not matches_expected_source(chunk.source, qrel.expected_source):
             continue
         for phrase in qrel.must_contain:
             if phrase in chunk.content and phrase not in matched_phrases:
@@ -110,7 +111,7 @@ def _build_result(qrel: QrelItem, ranked_contents: list[str], content_to_source:
 
     relevant_contents = {
         chunk.content for chunk in retrieved
-        if chunk.source == qrel.expected_source
+        if matches_expected_source(chunk.source, qrel.expected_source)
         and any(phrase in chunk.content for phrase in qrel.must_contain)
     }
 

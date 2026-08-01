@@ -26,6 +26,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 from incident_pilot import MAX_RETRIEVED_CHUNKS, IncidentPilot  # noqa: E402
 
 from schemas import QrelItem, QueryEvalResult, RagEvalReport, RetrievedChunk  # noqa: E402
+from source_aliases import matches_expected_source  # noqa: E402
 
 
 def evaluate_query_hyde(pilot: IncidentPilot, qrel: QrelItem) -> QueryEvalResult:
@@ -45,7 +46,7 @@ def evaluate_query_hyde(pilot: IncidentPilot, qrel: QrelItem) -> QueryEvalResult
     matched_phrases: list[str] = []
     first_relevant_rank = None
     for chunk in retrieved:
-        if chunk.source != qrel.expected_source:
+        if not matches_expected_source(chunk.source, qrel.expected_source):
             continue
         for phrase in qrel.must_contain:
             if phrase in chunk.content and phrase not in matched_phrases:
@@ -55,7 +56,7 @@ def evaluate_query_hyde(pilot: IncidentPilot, qrel: QrelItem) -> QueryEvalResult
 
     relevant_contents = {
         chunk.content for chunk in retrieved
-        if chunk.source == qrel.expected_source
+        if matches_expected_source(chunk.source, qrel.expected_source)
         and any(phrase in chunk.content for phrase in qrel.must_contain)
     }
     relevant_retrieved = len(relevant_contents)

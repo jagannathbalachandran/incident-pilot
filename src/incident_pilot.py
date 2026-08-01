@@ -195,7 +195,14 @@ class IncidentPilot:
     rollbacks, or production-mutating actions.
     """
 
-    def __init__(self):
+    def __init__(self, vectorstore_dir: Path | None = None):
+        """vectorstore_dir: override the default vector store location --
+        e.g. for eval-only comparisons against a different corpus (see
+        eval/benchmark/registry.py's *_latest_runbooks modes). Defaults to
+        None, which keeps today's behavior (module-level VECTORSTORE_DIR)
+        unchanged for every existing caller.
+        """
+        self._vectorstore_dir = vectorstore_dir or VECTORSTORE_DIR
         api_key = os.environ.get("GROQ_API_KEY")
         if not api_key:
             logger.error("GROQ_API_KEY is not set")
@@ -248,18 +255,18 @@ class IncidentPilot:
     # ------------------------------------------------------------------
 
     def _load_vectorstore(self) -> Chroma | None:
-        if not VECTORSTORE_DIR.exists():
+        if not self._vectorstore_dir.exists():
             logger.warning("Vector store directory not found at %s — RAG disabled",
-                           VECTORSTORE_DIR)
+                           self._vectorstore_dir)
             return None
         logger.debug("Loading embedding model (all-MiniLM-L6-v2)...")
         embeddings = HuggingFaceEmbeddings(
             model_name="all-MiniLM-L6-v2",
             model_kwargs={"device": "cpu"},
         )
-        logger.debug("Opening ChromaDB at %s", VECTORSTORE_DIR)
+        logger.debug("Opening ChromaDB at %s", self._vectorstore_dir)
         return Chroma(
-            persist_directory=str(VECTORSTORE_DIR),
+            persist_directory=str(self._vectorstore_dir),
             embedding_function=embeddings,
         )
 

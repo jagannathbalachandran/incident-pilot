@@ -46,6 +46,9 @@ load_dotenv(REPO_ROOT / ".env")
 MAIN_VECTORSTORE_DIR = REPO_ROOT / "synthetic-data" / "vectorstore"
 HYPE_VECTORSTORE_DIR = REPO_ROOT / "synthetic-data" / "vectorstore_hype"
 
+LATEST_RUNBOOKS_VECTORSTORE_DIR = REPO_ROOT / "synthetic-data" / "vectorstore_latest_runbooks"
+HYPE_LATEST_RUNBOOKS_VECTORSTORE_DIR = REPO_ROOT / "synthetic-data" / "vectorstore_hype_latest_runbooks"
+
 # Must match src/ingestion.py's EMBEDDING_MODEL_NAME -- HyPE embeds questions
 # with the same model HyDE's dense search already uses, so the only variable
 # between the two eval modes is the retrieval mechanism, not the embedder.
@@ -99,15 +102,16 @@ def _git_commit() -> str:
         return "unknown"
 
 
-def _load_unique_chunks(embeddings: HuggingFaceEmbeddings) -> list[Document]:
-    """Unique chunks from the main vector store, deduped by parent_content
-    (same substitution rule as _retrieve_with_queries -- a chunk split for
-    length has multiple embedded pieces sharing one parent_content; HyPE
-    should generate questions per logical chunk, not per split piece)."""
-    if not MAIN_VECTORSTORE_DIR.exists():
-        raise SystemExit(f"No main vector store at {MAIN_VECTORSTORE_DIR} -- run src/ingestion.py first.")
+def _load_unique_chunks(embeddings: HuggingFaceEmbeddings, source_vectorstore_dir: Path) -> list[Document]:
+    """Unique chunks from the given source vector store, deduped by
+    parent_content (same substitution rule as _retrieve_with_queries -- a
+    chunk split for length has multiple embedded pieces sharing one
+    parent_content; HyPE should generate questions per logical chunk, not
+    per split piece)."""
+    if not source_vectorstore_dir.exists():
+        raise SystemExit(f"No vector store at {source_vectorstore_dir} -- run ingestion for it first.")
 
-    vectorstore = Chroma(persist_directory=str(MAIN_VECTORSTORE_DIR), embedding_function=embeddings)
+    vectorstore = Chroma(persist_directory=str(source_vectorstore_dir), embedding_function=embeddings)
     got = vectorstore.get()
 
     seen: dict[str, Document] = {}
@@ -128,11 +132,20 @@ def _generate_questions(llm: ChatGroq, chunk_content: str, source: str) -> list[
     return lines[:QUESTIONS_PER_CHUNK]
 
 
-def build_hype_vectorstore() -> Chroma:
-    if HYPE_VECTORSTORE_DIR.exists():
-        shutil.rmtree(HYPE_VECTORSTORE_DIR)
-        print(f"Deleted existing HyPE vector store at {HYPE_VECTORSTORE_DIR}")
-    HYPE_VECTORSTORE_DIR.mkdir(parents=True)
+def build_hype_vectorstore(
+    source_vectorstore_dir: Path = MAIN_VECTORSTORE_DIR,
+    hype_vectorstore_dir: Path = HYPE_VECTORSTORE_DIR,
+    corpus_tag: str = "runbooks+postmorterms",
+) -> Chroma:
+    """Defaults reproduce today's exact behavior (reads the main vector
+    store, writes vectorstore_hype/). Pass a different source_vectorstore_dir
+    (e.g. vectorstore_latest_runbooks/) and hype_vectorstore_dir to build
+    HyPE questions for a different corpus without touching the default one.
+    """
+    if hype_vectorstore_dir.exists():
+        shutil.rmtree(hype_vectorstore_dir)
+        print(f"Deleted existing HyPE vector store at {hype_vectorstore_dir}")
+    hype_vectorstore_dir.mkdir(parents=True)
 
     print(f"Loading embedding model ({EMBEDDING_MODEL_NAME})...")
     embeddings = HuggingFaceEmbeddings(model_name=EMBEDDING_MODEL_NAME, model_kwargs={"device": "cpu"})
@@ -140,8 +153,8 @@ def build_hype_vectorstore() -> Chroma:
     print(f"Loading LLM ({LLM_MODEL_NAME}, temperature={LLM_TEMPERATURE}) for question generation...")
     llm = ChatGroq(model=LLM_MODEL_NAME, api_key=os.environ["GROQ_API_KEY"])
 
-    chunks = _load_unique_chunks(embeddings)
-    print(f"\n{len(chunks)} unique chunks loaded from main vector store.")
+    chunks = _load_unique_chunks(embeddings, source_vectorstore_dir)
+    print(f"\n{len(chunks)} unique chunks loaded from {source_vectorstore_dir.name}.")
 
     question_docs: list[Document] = []
     for i, chunk in enumerate(chunks, 1):
@@ -163,12 +176,13 @@ def build_hype_vectorstore() -> Chroma:
     vectorstore = Chroma.from_documents(
         documents=question_docs,
         embedding=embeddings,
-        persist_directory=str(HYPE_VECTORSTORE_DIR),
+        persist_directory=str(hype_vectorstore_dir),
         collection_metadata={"hnsw:space": "cosine"},
     )
-    print(f"HyPE vector store saved to {HYPE_VECTORSTORE_DIR}")
+    print(f"HyPE vector store saved to {hype_vectorstore_dir}")
 
     metadata = {
+        "corpus": corpus_tag,
         "embedding_model": EMBEDDING_MODEL_NAME,
         "llm_model": LLM_MODEL_NAME,
         "llm_temperature": LLM_TEMPERATURE,
@@ -179,11 +193,20 @@ def build_hype_vectorstore() -> Chroma:
         "git_commit": _git_commit(),
         "ingested_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
     }
-    (HYPE_VECTORSTORE_DIR / "_ingestion_metadata.json").write_text(json.dumps(metadata, indent=2))
-    print(f"HyPE ingestion metadata saved to {HYPE_VECTORSTORE_DIR / '_ingestion_metadata.json'}")
+    (hype_vectorstore_dir / "_ingestion_metadata.json").write_text(json.dumps(metadata, indent=2))
+    print(f"HyPE ingestion metadata saved to {hype_vectorstore_dir / '_ingestion_metadata.json'}")
 
     return vectorstore
 
 
 if __name__ == "__main__":
-    build_hype_vectorstore()
+    import sys
+
+    if len(sys.argv) > 1 and sys.argv[1] == "--latest-runbooks":
+        build_hype_vectorstore(
+            source_vectorstore_dir=LATEST_RUNBOOKS_VECTORSTORE_DIR,
+            hype_vectorstore_dir=HYPE_LATEST_RUNBOOKS_VECTORSTORE_DIR,
+            corpus_tag="latest_runbooks+postmorterms",
+        )
+    else:
+        build_hype_vectorstore()

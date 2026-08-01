@@ -36,6 +36,7 @@ from langchain_huggingface import HuggingFaceEmbeddings
 
 from rag_qrels import QRELS
 from schemas import QrelItem, QueryEvalResult, RagEvalReport, RetrievedChunk
+from source_aliases import matches_expected_source
 
 REPO_ROOT = Path(__file__).parent.parent
 VECTORSTORE_DIR = REPO_ROOT / "synthetic-data" / "vectorstore"
@@ -80,7 +81,7 @@ def evaluate_query(vectorstore: Chroma, qrel: QrelItem) -> QueryEvalResult:
     matched_phrases: list[str] = []
     first_relevant_rank = None
     for chunk in retrieved:
-        if chunk.source != qrel.expected_source:
+        if not matches_expected_source(chunk.source, qrel.expected_source):
             continue
         for phrase in qrel.must_contain:
             if phrase in chunk.content and phrase not in matched_phrases:
@@ -97,7 +98,7 @@ def evaluate_query(vectorstore: Chroma, qrel: QrelItem) -> QueryEvalResult:
     # the SRE actually getting any additional distinct information.
     relevant_contents = {
         chunk.content for chunk in retrieved
-        if chunk.source == qrel.expected_source
+        if matches_expected_source(chunk.source, qrel.expected_source)
         and any(phrase in chunk.content for phrase in qrel.must_contain)
     }
     relevant_retrieved = len(relevant_contents)

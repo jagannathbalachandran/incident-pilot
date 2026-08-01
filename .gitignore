@@ -9,3 +9,5 @@ __pycache__/
 .venv/
 synthetic-data/vectorstore/
 synthetic-data/vectorstore_hype/
+synthetic-data/vectorstore_latest_runbooks/
+synthetic-data/vectorstore_hype_latest_runbooks/

@@ -22,6 +22,7 @@ from langchain_huggingface import HuggingFaceEmbeddings
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from schemas import QrelItem, QueryEvalResult, RetrievedChunk  # noqa: E402
+from source_aliases import matches_expected_source  # noqa: E402
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 HYPE_VECTORSTORE_DIR = REPO_ROOT / "synthetic-data" / "vectorstore_hype"
@@ -30,11 +31,11 @@ EMBEDDING_MODEL_NAME = "all-MiniLM-L6-v2"  # must match src/hype_ingestion.py
 K = 6  # matches incident_pilot.MAX_RETRIEVED_CHUNKS (hyde's cap), for a fair comparison
 
 
-def load_hype_vectorstore() -> Chroma:
-    if not HYPE_VECTORSTORE_DIR.exists():
-        sys.exit(f"No HyPE vector store at {HYPE_VECTORSTORE_DIR} -- run `uv run python src/hype_ingestion.py` first.")
+def load_hype_vectorstore(vectorstore_dir: Path = HYPE_VECTORSTORE_DIR) -> Chroma:
+    if not vectorstore_dir.exists():
+        sys.exit(f"No HyPE vector store at {vectorstore_dir} -- run the matching src/hype_ingestion.py invocation first.")
     embeddings = HuggingFaceEmbeddings(model_name=EMBEDDING_MODEL_NAME, model_kwargs={"device": "cpu"})
-    return Chroma(persist_directory=str(HYPE_VECTORSTORE_DIR), embedding_function=embeddings)
+    return Chroma(persist_directory=str(vectorstore_dir), embedding_function=embeddings)
 
 
 def evaluate_query_hype(vectorstore: Chroma, qrel: QrelItem) -> QueryEvalResult:
@@ -67,7 +68,7 @@ def evaluate_query_hype(vectorstore: Chroma, qrel: QrelItem) -> QueryEvalResult:
     matched_phrases: list[str] = []
     first_relevant_rank = None
     for chunk in retrieved:
-        if chunk.source != qrel.expected_source:
+        if not matches_expected_source(chunk.source, qrel.expected_source):
             continue
         for phrase in qrel.must_contain:
             if phrase in chunk.content and phrase not in matched_phrases:
@@ -77,7 +78,7 @@ def evaluate_query_hype(vectorstore: Chroma, qrel: QrelItem) -> QueryEvalResult:
 
     relevant_contents = {
         chunk.content for chunk in retrieved
-        if chunk.source == qrel.expected_source
+        if matches_expected_source(chunk.source, qrel.expected_source)
         and any(phrase in chunk.content for phrase in qrel.must_contain)
     }
 
