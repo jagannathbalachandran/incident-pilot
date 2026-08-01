@@ -22,8 +22,11 @@ Usage:
     python src/ingestion.py
 """
 
+import json
 import re
 import shutil
+import subprocess
+from datetime import datetime, timezone
 from pathlib import Path
 
 from langchain_core.documents import Document
@@ -43,10 +46,16 @@ RUNBOOKS_DIR       = REPO_ROOT / "synthetic-data" / "runbooks"
 REAL_RUNBOOKS_DIR  = REPO_ROOT / "synthetic-data" / "real-runbooks"
 VECTORSTORE_DIR    = REPO_ROOT / "synthetic-data" / "vectorstore"
 
+# Single source of truth for the embedding model -- used for the tokenizer
+# below, the HuggingFaceEmbeddings instance in build_vectorstore(), and the
+# ingestion metadata stamp, so there's exactly one place to change for a
+# model swap instead of several independently hardcoded strings.
+EMBEDDING_MODEL_NAME = "all-MiniLM-L6-v2"
+
 # Must match the embedding model used in build_vectorstore() below -- this
 # tokenizer is what determines whether a chunk will get truncated at embed
 # time, so it's also what has to decide whether a chunk needs splitting.
-EMBEDDING_TOKENIZER = AutoTokenizer.from_pretrained("sentence-transformers/all-MiniLM-L6-v2")
+EMBEDDING_TOKENIZER = AutoTokenizer.from_pretrained(f"sentence-transformers/{EMBEDDING_MODEL_NAME}")
 
 # all-MiniLM-L6-v2's hard limit is 256 tokens (sentence_bert_config.json).
 # Chunks exceeding this get a secondary split so they stay within it.
@@ -212,6 +221,39 @@ def semantic_chunk_text(
 # Pipeline
 # ---------------------------------------------------------------------------
 
+def _git_commit() -> str:
+    try:
+        return subprocess.run(
+            ["git", "rev-parse", "HEAD"], cwd=REPO_ROOT, capture_output=True, text=True, check=True
+        ).stdout.strip()
+    except Exception:
+        return "unknown"
+
+
+def _write_ingestion_metadata(vectorstore: Chroma, chunk_count: int) -> None:
+    """Stamp what actually built this vectorstore, written once at ingestion
+    time -- not re-derived later from whatever ingestion.py's constants
+    currently say, which could have changed since without a re-ingest. This
+    is what lets a benchmark run detect "the vectorstore on disk doesn't
+    match what the current code would produce" instead of silently assuming
+    they match.
+    """
+    collection_metadata = vectorstore._collection.metadata
+    hnsw_space = (collection_metadata or {}).get("hnsw:space", "l2 (chroma implicit default)")
+
+    metadata = {
+        "embedding_model": EMBEDDING_MODEL_NAME,
+        "max_chunk_tokens": MAX_CHUNK_TOKENS,
+        "hnsw_space": hnsw_space,
+        "chunk_count": chunk_count,
+        "git_commit": _git_commit(),
+        "ingested_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+    }
+    path = VECTORSTORE_DIR / "_ingestion_metadata.json"
+    path.write_text(json.dumps(metadata, indent=2))
+    print(f"Ingestion metadata saved to {path}")
+
+
 def build_vectorstore() -> Chroma:
     # 1. Wipe and recreate
     if VECTORSTORE_DIR.exists():
@@ -220,9 +262,9 @@ def build_vectorstore() -> Chroma:
     VECTORSTORE_DIR.mkdir(parents=True)
 
     # 2. Create embedding model once — shared by SemanticChunker and ChromaDB
-    print("\nLoading embedding model (all-MiniLM-L6-v2)...")
+    print(f"\nLoading embedding model ({EMBEDDING_MODEL_NAME})...")
     embeddings = HuggingFaceEmbeddings(
-        model_name="all-MiniLM-L6-v2",
+        model_name=EMBEDDING_MODEL_NAME,
         model_kwargs={"device": "cpu"},
     )
 
@@ -254,6 +296,8 @@ def build_vectorstore() -> Chroma:
         persist_directory=str(VECTORSTORE_DIR),
     )
     print(f"Vector store saved to {VECTORSTORE_DIR}")
+
+    _write_ingestion_metadata(vectorstore, chunk_count=len(all_chunks))
     return vectorstore
 
 

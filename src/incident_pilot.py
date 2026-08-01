@@ -138,6 +138,12 @@ CHUNKS_PER_QUERY = 3
 # it while still keeping the multi-angle HyDE search itself unrestricted.
 MAX_RETRIEVED_CHUNKS = 6
 
+# HyDE expansion should be deterministic for reproducible retrieval evals --
+# see _expand_query. Named here (not just inlined at the call site) so
+# eval/benchmark/registry.py can read the actual value into pipeline_config
+# instead of duplicating it as a separate hardcoded number.
+HYDE_TEMPERATURE = 0
+
 # HyDE expansion prompt -- separate from the triage system prompt so the LLM
 # is in "query generator" mode, not "triage copilot" mode.
 HYDE_PROMPT = """\
@@ -267,7 +273,7 @@ class IncidentPilot:
         evals; the final answer's temperature is untouched.
         """
         prompt = HYDE_PROMPT.format(query=user_input)
-        response = self.model.bind(temperature=0).invoke([HumanMessage(content=prompt)])
+        response = self.model.bind(temperature=HYDE_TEMPERATURE).invoke([HumanMessage(content=prompt)])
         expanded = [
             line.strip()
             for line in response.content.strip().split("\n")

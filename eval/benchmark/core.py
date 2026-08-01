@@ -26,7 +26,7 @@ from models import (
     SuiteRunResult,
     utcnow_iso,
 )
-from registry import suites_for
+from registry import pipeline_config_for, suites_for
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 BENCHMARKS_ROOT = REPO_ROOT / "eval" / "benchmarks"
@@ -70,10 +70,16 @@ def run_benchmark(category: str, mode: str, repeats: int = 1, description: str =
     suite_aggregates: dict[str, SuiteAggregate] = {}
     # pooled_by_repeat[r] = list of QueryMetricRecord across all suites for repeat r
     pooled_by_repeat: list[list[QueryMetricRecord]] = [[] for _ in range(repeats)]
+    pipeline_config: dict | None = None
 
     for suite_name, spec in specs.items():
         ctx = spec.setup()
         try:
+            if pipeline_config is None:
+                # Same for every suite in a run (same vectorstore, same LLM
+                # config) -- captured once, from whichever suite runs first.
+                pipeline_config = pipeline_config_for(mode, ctx)
+
             repeat_results: list[SuiteRunResult] = []
             for r in range(repeats):
                 records = []
@@ -118,6 +124,7 @@ def run_benchmark(category: str, mode: str, repeats: int = 1, description: str =
         git_commit=_git_commit(),
         git_dirty=_git_dirty(),
         description=description,
+        pipeline_config=pipeline_config or {},
         suites=suite_aggregates,
         summary=summary,
     )
@@ -219,7 +226,17 @@ def compare(baseline: BaselineRecord, new_run: BenchmarkRun) -> dict:
     Only overlapping queries contribute to deltas; new/missing queries are
     reported separately, never silently dropped or silently included.
     """
-    report: dict = {"suites": {}, "summary": None}
+    pipeline_config_mismatch = (
+        baseline.pipeline_config != new_run.pipeline_config
+        and (baseline.pipeline_config or new_run.pipeline_config)
+    )
+    report: dict = {
+        "suites": {},
+        "summary": None,
+        "pipeline_config_mismatch": pipeline_config_mismatch,
+        "baseline_pipeline_config": baseline.pipeline_config,
+        "new_pipeline_config": new_run.pipeline_config,
+    }
 
     for suite_name, new_suite in new_run.suites.items():
         if suite_name not in baseline.suites:
@@ -290,6 +307,11 @@ def compare(baseline: BaselineRecord, new_run: BenchmarkRun) -> dict:
 
 def print_comparison(report: dict) -> None:
     print("\n=== Comparison vs. current baseline ===")
+    if report.get("pipeline_config_mismatch"):
+        print("!! PIPELINE CONFIG CHANGED vs. baseline (embedding model / hnsw_space / llm_model / "
+              "vectorstore not re-ingested since / etc.) -- deltas below are NOT apples-to-apples !!")
+        print(f"   baseline: {report['baseline_pipeline_config']}")
+        print(f"   new:      {report['new_pipeline_config']}")
     for suite_name, r in report["suites"].items():
         print(f"\n[{suite_name}]")
         if r["status"] == "new_suite":
@@ -319,6 +341,7 @@ def print_comparison(report: dict) -> None:
 def print_run_report(run: BenchmarkRun) -> None:
     print(f"\n=== Benchmark run: {run.category}/{run.mode} (repeats={run.repeats}) ===")
     print(f"git_commit={run.git_commit[:12]} dirty={run.git_dirty}")
+    print(f"pipeline_config={run.pipeline_config}")
     for suite_name, suite in run.suites.items():
         print(f"\n[{suite_name}] n_queries={suite.n_queries} retrieval_config={suite.retrieval_config}")
         for metric_key, stats in suite.aggregate_metrics.items():

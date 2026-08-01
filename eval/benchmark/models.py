@@ -102,6 +102,13 @@ class BenchmarkRun(BaseModel):
     git_commit: str
     git_dirty: bool
     description: str = ""
+    pipeline_config: dict[str, str | int | float | None] = Field(
+        default_factory=dict,
+        description="Run-level (not per-suite -- shared by every suite in a run), e.g. "
+        "embedding_model, hnsw_space, vectorstore_chunk_count (from the vectorstore's own "
+        "_ingestion_metadata.json, not re-derived from current code) plus llm_model/"
+        "hyde_temperature (hyde mode only, read live from the running IncidentPilot).",
+    )
     suites: dict[str, SuiteAggregate]
     summary: dict[str, MetricStats] = Field(
         description="Pooled across all suites' records (weighted by query "
