@@ -129,6 +129,9 @@ services:
     container_name: incident-pilot
     ports:
       - "7860:7860"
+      # Phoenix observability UI (only serves anything if PHOENIX_TRACING=true
+      # and no external PHOENIX_COLLECTOR_ENDPOINT is set -- see below).
+      - "6006:6006"
     environment:
       # Point to flask-generator's/prometheus's/loki's internal Docker hostnames --
       # query_logs.py defaults to localhost, which inside this container means
@@ -142,6 +145,17 @@ services:
       # Groq model — each model has its own per-day token budget, so switch
       # here (e.g. llama-3.3-70b-versatile) when one model's quota is spent.
       - GROQ_MODEL=${GROQ_MODEL:-llama-3.3-70b-versatile}
+      # Observability (Phoenix) — off unless PHOENIX_TRACING=true is set in
+      # .env/shell. Runs in-process inside this container (no separate
+      # container/stack needed) and serves its UI on port 6006, published
+      # above. When enabled, prompts + responses are sent wherever spans are
+      # exported -- by default that's the in-process server only. Set
+      # PHOENIX_COLLECTOR_ENDPOINT + PHOENIX_API_KEY to use Phoenix Cloud
+      # instead.
+      - PHOENIX_TRACING=${PHOENIX_TRACING:-}
+      - PHOENIX_PROJECT_NAME=${PHOENIX_PROJECT_NAME:-incident-pilot}
+      - PHOENIX_COLLECTOR_ENDPOINT=${PHOENIX_COLLECTOR_ENDPOINT:-}
+      - PHOENIX_API_KEY=${PHOENIX_API_KEY:-}
     volumes:
       # Mount the vector store from host so it persists across container restarts
       # Run 'uv run python src/ingestion.py' first if directory is empty

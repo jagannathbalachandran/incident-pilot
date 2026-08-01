@@ -108,6 +108,44 @@ in `try/except`: without it, an exception (e.g. a Groq 429/413) left Gradio show
 response is wrong" rather than "this attempt failed." Failures now return a clear error message
 instead.
 
+### `src/observability.py`
+Arize Phoenix tracing setup. `configure_observability()` (called after `setup_logging()` in both
+entrypoints — `app.py`'s `__main__` and `incident_pilot.py`'s `__main__`) logs whether tracing is
+on and, when enabled, eagerly builds the tracer via `_get_tracer()`: launches a local Phoenix
+server in-process (a background thread via `phoenix.launch_app()`, no Docker, no API key) unless
+`PHOENIX_COLLECTOR_ENDPOINT` already points somewhere else, then calls `phoenix.otel.register()`
+and `LangChainInstrumentor().instrument(...)`, which patches LangChain **globally** — so every
+`ChatGroq.invoke()` is auto-traced with token usage, with no per-model callback wiring needed
+(unlike some other tracers). Enablement is the `PHOENIX_TRACING` env var (loaded from `.env` like
+`GROQ_API_KEY`). Four `@track` decorators in `incident_pilot.py` — `query` → `incident_triage`
+(chain), `_call_mcp_tool` → `mcp_tool` (tool), `_expand_query` → `hyde_expansion` (chain),
+`_retrieve_with_queries` → `rag_retrieval` (retriever) — group everything into one nested trace
+per query; `track()` maps its `type=` straight onto `OITracer`'s span-kind decorators
+(`tracer.chain`/`tracer.tool`/`tracer.retriever`/`tracer.llm`). `update_trace_metadata()` tags the
+active span (`opentelemetry.trace.get_current_span().set_attribute(...)`) with
+`request_id`/`model`/`service`. **Opt-in and off by default** — `track()` short-circuits on
+`tracing_enabled()`, so when `PHOENIX_TRACING` is unset/false, **`phoenix`/`openinference` are
+never even imported**, `@track` is a plain passthrough (behavior unchanged; the test suite runs
+untouched). Enabling it sends prompts (retrieved runbook/postmortem text + live telemetry) and
+responses wherever spans are exported (the in-process server by default, or Phoenix Cloud if
+`PHOENIX_COLLECTOR_ENDPOINT`/`PHOENIX_API_KEY` are set). Independent of and additive to the in-app
+`get_trace()` panel.
+
+> **Dependency note:** Phoenix needed no version bumps to `transformers`/`jinja2` (unlike Opik,
+> which was tried first and rejected — its `litellm` dependency forces `tokenizers>=0.21`/
+> `jinja2>=3.1.2`, incompatible with this repo's pinned embedding stack, and even after bumping
+> those, Opik's own `litellm`/`arize-phoenix-evals`-equivalent version coupling kept breaking on
+> import). Phoenix does bundle its own FastAPI server, so `fastapi`/`starlette`'s upper bounds
+> were relaxed in the root `pyproject.toml` (unused by `src/` code either way — only
+> `flask-generator`'s separate `pyproject.toml` matters for that service), and
+> `arize-phoenix-evals` is pinned `<3` since `arize-phoenix` 13.x's bundled experiments code
+> expects `arize-phoenix-evals`'s pre-3.x `phoenix.evals.models` API shape.
+>
+> In Docker, Phoenix's in-process server runs *inside* the `incident-pilot` container itself when
+> `PHOENIX_TRACING=true` — no separate container/stack, unlike Opik's multi-service self-host
+> (backend/frontend/ClickHouse/MySQL/Redis/Zookeeper). `docker-compose.yml` publishes port 6006 so
+> the UI is reachable from the host.
+
 ### `flask-generator/`
 Docker FastAPI app that simulates production incidents in real-time:
 - `app.py` — FastAPI server with background tick loop

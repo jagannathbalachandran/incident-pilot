@@ -11,6 +11,12 @@ dependencies = [
     "langchain-text-splitters",
     "langchain-experimental",
     "langchain-huggingface",
+    # Observability: Arize Phoenix -- runs in-process (no Docker), no API key.
+    # arize-phoenix-evals pinned <3 -- arize-phoenix 13.x's bundled experiments
+    # code imports phoenix.evals.models, which arize-phoenix-evals 3.x removed.
+    "arize-phoenix",
+    "arize-phoenix-evals<3",
+    "openinference-instrumentation-langchain",
     "chromadb",
     "pdfplumber",
     "python-docx",
@@ -20,9 +26,17 @@ dependencies = [
     "python-dotenv",
     "requests",
     "gradio>=4.0,<5.0",
-    "jinja2<3.1",
-    "fastapi>=0.100.0,<0.112.0",
-    "starlette>=0.27.0,<0.38.0",
+    # jinja2 3.0.x has a template-cache bug that crashes gradio 4.44's route
+    # rendering (TypeError: unhashable type: 'dict'); gradio itself only needs
+    # jinja2<4.0, so bump past 3.1 where that bug is fixed.
+    "jinja2>=3.1,<4.0",
+    # Bounds relaxed from the original <0.112/<0.38 ceilings (unused by src/
+    # code -- only flask-generator's own pyproject.toml matters there) so
+    # arize-phoenix's bundled server can resolve. Capped <1.0 -- Starlette's
+    # 1.x line broke gradio 4.44's Jinja2Templates route rendering (TypeError:
+    # unhashable type: 'dict').
+    "fastapi>=0.115,<1.0",
+    "starlette>=0.37.0,<1.0",
     "prometheus-client>=0.21,<1.0",
     "pydantic>=2.0,<3.0",
     "uvicorn[standard]>=0.27.0,<0.38.0",

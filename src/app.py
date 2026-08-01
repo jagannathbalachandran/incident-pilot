@@ -25,6 +25,7 @@ import requests
 
 from incident_pilot import IncidentPilot
 from logging_config import setup_logging
+from observability import configure_observability
 from request_context import set_request_id
 
 logger = logging.getLogger(__name__)
@@ -661,5 +662,6 @@ with gr.Blocks(
 
 if __name__ == "__main__":
     setup_logging()
+    configure_observability()
     logger.info("Starting Gradio UI on port 7860")
     demo.launch(share=False, server_name="0.0.0.0", server_port=7860)

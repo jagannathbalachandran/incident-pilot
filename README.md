@@ -89,6 +89,39 @@ cd src && TOKENIZERS_PARALLELISM=false uv run python app.py
 
 ---
 
+## Observability (Arize Phoenix)
+
+Tracing is **optional and off by default**. To capture each triage query as a
+single grouped trace — token usage, latency, the model's tool-call decisions,
+MCP tool executions, RAG retrieval, and HyDE — set this in `.env`:
+
+```bash
+PHOENIX_TRACING=true
+# Phoenix needs NO Docker and NO API key: enabling this launches a lightweight
+# server in-process (a background thread in this same Python process),
+# serving its UI at http://localhost:6006. Nothing separate to start or manage.
+# PHOENIX_PROJECT_NAME=incident-pilot              (default)
+# To use an external Phoenix instance / Phoenix Cloud instead, set:
+#   PHOENIX_COLLECTOR_ENDPOINT=...
+#   PHOENIX_API_KEY=...
+```
+
+Then run a query and view traces at http://localhost:6006. When
+`PHOENIX_TRACING` is unset/`false`, tracing is a full no-op — `phoenix` isn't
+even imported, the agent behaves identically, and nothing leaves the process.
+Note that enabling it sends prompts (including retrieved runbook/postmortem
+text and live telemetry) and responses wherever spans are exported (the
+in-process server by default).
+
+> **Note:** Phoenix doesn't require any dependency version changes — unlike
+> some alternatives (Opik's `litellm` dependency, for one), it doesn't force
+> `transformers`/`jinja2` off their pins. It does bundle its own FastAPI
+> server, so `fastapi`/`starlette`'s upper-bound pins were relaxed (they
+> weren't used by any code in `src/` anyway — only `flask-generator`'s own
+> separate `pyproject.toml` matters there).
+
+---
+
 ## Testing
 
 ```bash

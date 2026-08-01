@@ -20,11 +20,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy dependency manifests
-COPY pyproject.toml .
+# Copy dependency manifests -- uv.lock is required so the container gets the
+# exact host-verified versions (e.g. chromadb), not an independent re-resolve
+# that can drift and silently produce an incompatible version against the
+# persisted vector store's on-disk schema.
+COPY pyproject.toml uv.lock .
 
-# Install production dependencies only (exclude test/dev groups)
-RUN uv sync --no-dev && \
+# Install production dependencies only (exclude test/dev groups), frozen to
+# the lockfile -- no re-resolution.
+RUN uv sync --frozen --no-dev && \
     uv pip install torch --index-url https://download.pytorch.org/whl/cpu --quiet
 
 # =========================================================================

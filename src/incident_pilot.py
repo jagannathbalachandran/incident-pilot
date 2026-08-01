@@ -42,6 +42,7 @@ from langchain_chroma import Chroma
 
 from logging_config import setup_logging
 from mcp_client import MCPClient
+from observability import configure_observability, track, update_trace_metadata
 from request_context import get_request_id
 
 logger = logging.getLogger(__name__)
@@ -208,6 +209,7 @@ class IncidentPilot:
         # code change -- e.g. drop to llama-3.1-8b-instant when the 70b
         # model's daily quota is exhausted.
         model_name = os.environ.get("GROQ_MODEL", "llama-3.1-8b-instant")
+        self._model_name = model_name
         logger.info("Initialising IncidentPilot with model=%s", model_name)
         self.system_prompt = SYSTEM_PROMPT_PATH.read_text()
         self.model = ChatGroq(
@@ -222,6 +224,12 @@ class IncidentPilot:
         self.mcp_client.start()
         self.tools = _build_tools(self.mcp_client)
         self.model_with_tools = self.model.bind_tools(self.tools)
+
+        # Observability: Phoenix's LangChainInstrumentor patches LangChain
+        # globally (see configure_observability()), so every ChatGroq.invoke()
+        # is auto-traced with no per-model callback needed here -- unlike some
+        # other tracers. Only requires configure_observability() to have run
+        # before the first real invoke(), not before construction.
 
         # Cache for trace data (exposed via get_trace() for the UI)
         self._last_trace: dict | None = None
@@ -255,6 +263,7 @@ class IncidentPilot:
             embedding_function=embeddings,
         )
 
+    @track(name="hyde_expansion")
     def _expand_query(self, user_input: str) -> list[str]:
         """HyDE: ask the LLM to generate 5 targeted search queries for the
         engineer's symptom description.
@@ -284,6 +293,7 @@ class IncidentPilot:
         all_queries = [user_input] + expanded
         return all_queries[:6]  # cap to avoid runaway expansion
 
+    @track(type="retriever", name="rag_retrieval")
     def _retrieve_with_queries(self, queries: list[str]) -> list[dict]:
         """Run a pre-computed list of queries against the vector store,
         deduplicate by content (keeping each chunk's best -- lowest-distance
@@ -361,6 +371,7 @@ class IncidentPilot:
     # MCP tool-calling loop
     # ------------------------------------------------------------------
 
+    @track(type="tool", name="mcp_tool")
     def _call_mcp_tool(self, name: str, args: dict) -> dict:
         """Execute one MCP tool call and return its result dict, or an
         ``{"error": ...}`` dict if the call itself failed (e.g. the MCP
@@ -575,6 +586,7 @@ class IncidentPilot:
     # Main query
     # ------------------------------------------------------------------
 
+    @track(name="incident_triage")
     def query(self, user_input: str, service: str | None = None) -> str:
         """Run a full triage query: RAG retrieval (always) + an MCP
         tool-calling loop over ``query_metrics``/``query_logs`` that the
@@ -589,6 +601,14 @@ class IncidentPilot:
         """
         req_id = get_request_id() or "-"
         logger.info("Processing query [req=%s]: '%s...'", req_id, user_input[:80])
+
+        # Correlate this Phoenix trace with the app's [req=<id>] logs. No-op when
+        # tracing is disabled or there's no active trace.
+        update_trace_metadata(metadata={
+            "request_id": req_id,
+            "model": self._model_name,
+            "service": service,
+        })
 
         query_start = time.perf_counter()
         timings: list[dict] = []
@@ -768,6 +788,7 @@ def _separator(label: str) -> None:
 
 if __name__ == "__main__":
     setup_logging()
+    configure_observability()
 
     pilot = IncidentPilot()
 
