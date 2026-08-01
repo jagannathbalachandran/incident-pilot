@@ -260,9 +260,14 @@ class IncidentPilot:
 
         The original query is always prepended as a fallback so retrieval
         never returns fewer results than a plain search would.
+
+        temperature=0 here (not on self.model itself, which defaults to 0.7
+        and is shared with the final answer/contradiction-check calls) --
+        HyDE expansion should be deterministic for reproducible retrieval
+        evals; the final answer's temperature is untouched.
         """
         prompt = HYDE_PROMPT.format(query=user_input)
-        response = self.model.invoke([HumanMessage(content=prompt)])
+        response = self.model.bind(temperature=0).invoke([HumanMessage(content=prompt)])
         expanded = [
             line.strip()
             for line in response.content.strip().split("\n")
