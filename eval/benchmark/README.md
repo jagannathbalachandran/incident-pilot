@@ -1,10 +1,12 @@
 # Benchmark/baseline tracking
 
-A promotable-baseline system for judging whether a retrieval-pipeline change actually helped,
-instead of relying on one-off ad-hoc eval runs. Built because ad-hoc comparisons in this repo's
-history turned out to be unreliable evidence: HyDE's non-determinism made a query flip between
-HIT and MISS across two consecutive runs with *nothing* changed, and a small corpus (7 documents,
-36-72 synthetic queries) makes it easy to mistake noise for a real improvement or regression.
+A promotable-baseline system for judging whether a change actually helped -- any change, in any
+part of the pipeline, not just retrieval. Repeatable runs, a tracked baseline, and explicit
+before/after comparison turn "does this look better?" into evidence instead of an impression.
+That distinction is concretely useful here: HyDE's non-determinism made a query flip between HIT
+and MISS across two consecutive runs with *nothing* changed, and a small corpus (7 documents,
+36-72 synthetic queries) makes it easy to mistake noise for a real improvement or regression --
+`repeats` and baseline comparison are how this system accounts for both.
 
 ## What we're benchmarking
 
@@ -105,8 +107,9 @@ run-to-run flip mentioned above).
 
 ## Using this for design changes
 
-The intended loop for any retrieval-pipeline change (embedding model swap, BM25 hybrid, chunk-size
-tuning, etc.):
+The intended loop for any change you want evidence on -- a retrieval-pipeline change (embedding
+model swap, BM25 hybrid, chunk-size tuning), a prompt change, or anything a future category
+covers (answer correctness, groundedness):
 
 1. Make sure a current baseline exists for the `(category, mode)` you're about to affect (`history`
    command, or just run once with `--promote` if none exists yet).
