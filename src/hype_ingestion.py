@@ -46,8 +46,17 @@ load_dotenv(REPO_ROOT / ".env")
 MAIN_VECTORSTORE_DIR = REPO_ROOT / "synthetic-data" / "vectorstore"
 HYPE_VECTORSTORE_DIR = REPO_ROOT / "synthetic-data" / "vectorstore_hype"
 
+# MAIN_VECTORSTORE_DIR is now built from latest_runbooks/ by default (see
+# src/ingestion.py) -- HyPE's default source/output above needs no path
+# change to follow that, since it just reads whatever's actually there.
 LATEST_RUNBOOKS_VECTORSTORE_DIR = REPO_ROOT / "synthetic-data" / "vectorstore_latest_runbooks"
 HYPE_LATEST_RUNBOOKS_VECTORSTORE_DIR = REPO_ROOT / "synthetic-data" / "vectorstore_hype_latest_runbooks"
+
+# Legacy/reference corpus (all-markdown runbooks/, no format diversity) --
+# built via `python src/ingestion.py --legacy-runbooks` first, then this
+# file's --legacy-runbooks flag reads from there.
+LEGACY_RUNBOOKS_VECTORSTORE_DIR = REPO_ROOT / "synthetic-data" / "vectorstore_legacy_runbooks"
+HYPE_LEGACY_RUNBOOKS_VECTORSTORE_DIR = REPO_ROOT / "synthetic-data" / "vectorstore_hype_legacy_runbooks"
 
 # Must match src/ingestion.py's EMBEDDING_MODEL_NAME -- HyPE embeds questions
 # with the same model HyDE's dense search already uses, so the only variable
@@ -135,12 +144,13 @@ def _generate_questions(llm: ChatGroq, chunk_content: str, source: str) -> list[
 def build_hype_vectorstore(
     source_vectorstore_dir: Path = MAIN_VECTORSTORE_DIR,
     hype_vectorstore_dir: Path = HYPE_VECTORSTORE_DIR,
-    corpus_tag: str = "runbooks+postmorterms",
+    corpus_tag: str = "latest_runbooks+postmorterms",
 ) -> Chroma:
-    """Defaults reproduce today's exact behavior (reads the main vector
-    store, writes vectorstore_hype/). Pass a different source_vectorstore_dir
-    (e.g. vectorstore_latest_runbooks/) and hype_vectorstore_dir to build
-    HyPE questions for a different corpus without touching the default one.
+    """Defaults read the production vector store (built from latest_runbooks/
+    by default, see src/ingestion.py) and write vectorstore_hype/. Pass a
+    different source_vectorstore_dir/hype_vectorstore_dir/corpus_tag to
+    build HyPE questions for a different corpus (e.g. the legacy all-markdown
+    one) without touching the default one.
     """
     if hype_vectorstore_dir.exists():
         shutil.rmtree(hype_vectorstore_dir)
@@ -203,10 +213,18 @@ if __name__ == "__main__":
     import sys
 
     if len(sys.argv) > 1 and sys.argv[1] == "--latest-runbooks":
+        # Standalone comparison store, separate from the production one --
+        # still useful for re-running the side-by-side eval later.
         build_hype_vectorstore(
             source_vectorstore_dir=LATEST_RUNBOOKS_VECTORSTORE_DIR,
             hype_vectorstore_dir=HYPE_LATEST_RUNBOOKS_VECTORSTORE_DIR,
             corpus_tag="latest_runbooks+postmorterms",
         )
+    elif len(sys.argv) > 1 and sys.argv[1] == "--legacy-runbooks":
+        build_hype_vectorstore(
+            source_vectorstore_dir=LEGACY_RUNBOOKS_VECTORSTORE_DIR,
+            hype_vectorstore_dir=HYPE_LEGACY_RUNBOOKS_VECTORSTORE_DIR,
+            corpus_tag="runbooks+postmorterms",
+        )
     else:
-        build_hype_vectorstore()
+        build_hype_vectorstore()  # production: reads whatever's in vectorstore/ (latest_runbooks/ by default)

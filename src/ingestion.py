@@ -1,10 +1,15 @@
 """
 Ingestion pipeline.
 
-Indexes two corpora: runbooks (synthetic-data/runbooks/) and postmortems
-(synthetic-data/postmorterms/) -- both markdown, frontmatter stripped, then
-chunked with SemanticChunker, which embeds sentences and splits where
-meaning shifts significantly (not a plain ## header split).
+Indexes two corpora: runbooks (synthetic-data/latest_runbooks/ by default --
+mixes markdown with PDF/DOCX to simulate the format diversity a real
+enterprise runbook corpus would have) and postmortems
+(synthetic-data/postmorterms/, markdown) -- frontmatter stripped for
+markdown sources, then chunked with SemanticChunker, which embeds
+sentences and splits where meaning shifts significantly (not a plain ##
+header split, and not aware of PDF/DOCX structure either -- see
+docs/ or ask why latest_runbooks/ measurably chunks differently from the
+same content as clean markdown, even though nothing semantic changed).
 
   Safety net: any chunk exceeding MAX_CHUNK_TOKENS (measured with the same
   tokenizer the embedding model uses) is further split by
@@ -14,12 +19,18 @@ meaning shifts significantly (not a plain ## header split).
   The embedding model is created once and shared between SemanticChunker
   and ChromaDB to avoid loading it twice.
 
-synthetic-data/real-runbooks/ (PDF/DOCX) is not currently indexed -- the
-format-agnostic extractors below (extract_pdf_text/extract_docx_text) are
-kept in case that source is switched back on.
+synthetic-data/runbooks/ (the original all-markdown corpus, no format
+diversity) is kept as a legacy/reference corpus -- build it via
+`python src/ingestion.py --legacy-runbooks` into its own separate vector
+store (vectorstore_legacy_runbooks/) without touching the production one.
+synthetic-data/real-runbooks/ (PDF/DOCX) is not directly indexed -- it was
+the source used to build latest_runbooks/'s PDF/DOCX files (see
+synthetic-data/latest_runbooks/ and the build script referenced in git
+history), not read by ingestion.py itself.
 
 Usage:
-    python src/ingestion.py
+    python src/ingestion.py                  # production: latest_runbooks/ + postmorterms/ -> vectorstore/
+    python src/ingestion.py --legacy-runbooks  # reference: runbooks/ + postmorterms/ -> vectorstore_legacy_runbooks/
 """
 
 import json
@@ -48,12 +59,20 @@ VECTORSTORE_DIR    = REPO_ROOT / "synthetic-data" / "vectorstore"
 
 # latest_runbooks/ mixes markdown with PDF/DOCX (some services' runbooks
 # converted to PDF/DOCX, others left as markdown, plus one new PDF-only
-# service) to simulate format diversity within one corpus, while keeping
-# runbook *content* identical to runbooks/ where a service has both. Built
-# into its own vectorstore -- never touches the default runbooks/vectorstore/
-# pair -- so the two corpora can be compared side by side.
-LATEST_RUNBOOKS_DIR         = REPO_ROOT / "synthetic-data" / "latest_runbooks"
-VECTORSTORE_LATEST_RUNBOOKS_DIR = REPO_ROOT / "synthetic-data" / "vectorstore_latest_runbooks"
+# service) to simulate the format diversity a real enterprise runbook
+# corpus would have, while keeping runbook *content* identical to
+# runbooks/ where a service has both. This is now the PRODUCTION corpus --
+# build_vectorstore()'s defaults below build FROM here INTO the same
+# VECTORSTORE_DIR the shipped app already reads, per the benchmark
+# comparison in eval/benchmarks/ (hyde_latest_runbooks/hype_latest_runbooks
+# baselines) showing this corpus is what the app should actually run on.
+LATEST_RUNBOOKS_DIR = REPO_ROOT / "synthetic-data" / "latest_runbooks"
+
+# runbooks/ (all-markdown, no format diversity) is kept as a legacy/
+# reference corpus -- not deleted, still buildable via --legacy-runbooks,
+# into its own separate vector store so it never collides with the
+# production one.
+VECTORSTORE_LEGACY_RUNBOOKS_DIR = REPO_ROOT / "synthetic-data" / "vectorstore_legacy_runbooks"
 
 # Single source of truth for the embedding model -- used for the tokenizer
 # below, the HuggingFaceEmbeddings instance in build_vectorstore(), and the
@@ -287,15 +306,19 @@ def _write_ingestion_metadata(vectorstore: Chroma, chunk_count: int, vectorstore
 
 
 def build_vectorstore(
-    runbooks_dir: Path = RUNBOOKS_DIR,
+    runbooks_dir: Path = LATEST_RUNBOOKS_DIR,
     vectorstore_dir: Path = VECTORSTORE_DIR,
-    corpus_tag: str = "runbooks+postmorterms",
+    corpus_tag: str = "latest_runbooks+postmorterms",
 ) -> Chroma:
-    """Defaults reproduce today's exact behavior (runbooks/ + postmorterms/
-    -> vectorstore/). Pass a different runbooks_dir (e.g. latest_runbooks/,
-    which mixes markdown with PDF/DOCX to simulate format diversity) and
-    vectorstore_dir to build a separate, parallel corpus without touching
-    the default one -- e.g. for an eval-only comparison.
+    """Defaults build the PRODUCTION corpus: latest_runbooks/ (mixed
+    markdown/PDF/DOCX, simulating real enterprise format diversity) +
+    postmorterms/ -> vectorstore/, the same location the shipped app reads.
+    Benchmark comparison in eval/benchmarks/ (hyde_latest_runbooks/
+    hype_latest_runbooks baselines vs. the original runbooks-only ones)
+    is what justified this as the default. Pass runbooks_dir=RUNBOOKS_DIR
+    and vectorstore_dir=VECTORSTORE_LEGACY_RUNBOOKS_DIR (or run with
+    --legacy-runbooks below) to rebuild the old all-markdown corpus for
+    reference/comparison without touching the production vector store.
     """
     # 1. Wipe and recreate
     if vectorstore_dir.exists():
@@ -367,14 +390,14 @@ if __name__ == "__main__":
     import sys
 
     print("=== IncidentPilot Ingestion Pipeline ===")
-    if len(sys.argv) > 1 and sys.argv[1] == "--latest-runbooks":
+    if len(sys.argv) > 1 and sys.argv[1] == "--legacy-runbooks":
         vectorstore = build_vectorstore(
-            runbooks_dir=LATEST_RUNBOOKS_DIR,
-            vectorstore_dir=VECTORSTORE_LATEST_RUNBOOKS_DIR,
-            corpus_tag="latest_runbooks+postmorterms",
+            runbooks_dir=RUNBOOKS_DIR,
+            vectorstore_dir=VECTORSTORE_LEGACY_RUNBOOKS_DIR,
+            corpus_tag="runbooks+postmorterms",
         )
     else:
-        vectorstore = build_vectorstore()
+        vectorstore = build_vectorstore()  # latest_runbooks/ -> vectorstore/ (production)
     query_vectorstore(vectorstore, "connection pool exhaustion in checkout service")
     query_vectorstore(vectorstore, "high latency in checkout service")
     query_vectorstore(vectorstore, "error in add to cart service")
