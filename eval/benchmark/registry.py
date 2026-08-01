@@ -57,8 +57,16 @@ from hybrid_retrieval import (  # noqa: E402
     evaluate_query_no_hyde_hybrid as _evaluate_query_no_hyde_hybrid,
 )
 
+from hype_retrieval import (  # noqa: E402
+    K as _HYPE_K,
+    evaluate_query_hype as _evaluate_query_hype,
+    load_hype_vectorstore as _load_hype_vectorstore,
+)
+
 VECTORSTORE_DIR = Path(__file__).resolve().parent.parent.parent / "synthetic-data" / "vectorstore"
 INGESTION_METADATA_PATH = VECTORSTORE_DIR / "_ingestion_metadata.json"
+HYPE_VECTORSTORE_DIR = Path(__file__).resolve().parent.parent.parent / "synthetic-data" / "vectorstore_hype"
+HYPE_INGESTION_METADATA_PATH = HYPE_VECTORSTORE_DIR / "_ingestion_metadata.json"
 
 
 def _load_ingestion_metadata() -> dict:
@@ -78,12 +86,27 @@ def _load_ingestion_metadata() -> dict:
     return raw
 
 
+def _load_hype_ingestion_metadata() -> dict:
+    """Same idea as _load_ingestion_metadata, but for the separate HyPE
+    vector store -- distinct fields (llm_model/questions_per_chunk used to
+    generate the question embeddings, not the main store's chunking config).
+    """
+    if not HYPE_INGESTION_METADATA_PATH.exists():
+        return {"hype_ingestion_metadata": "unavailable (vectorstore_hype missing or predates metadata tracking)"}
+    raw = json.loads(HYPE_INGESTION_METADATA_PATH.read_text())
+    raw["hype_vectorstore_git_commit"] = raw.pop("git_commit", "unknown")
+    return raw
+
+
 def pipeline_config_for(mode: str, ctx: Any) -> dict:
     """Run-level config -- same for every suite in a run, so this is called
     once per run in core.py, not per suite. ctx shape depends on mode:
     no_hyde -> Chroma vectorstore; hyde -> IncidentPilot; no_hyde_bm25_hybrid
-    -> HybridIndex; hyde_bm25_hybrid -> (IncidentPilot, HybridIndex).
+    -> HybridIndex; hyde_bm25_hybrid -> (IncidentPilot, HybridIndex);
+    hype -> Chroma vectorstore (the separate HyPE collection).
     """
+    if mode == "hype":
+        return _load_hype_ingestion_metadata()
     config = _load_ingestion_metadata()
     if mode == "hyde":
         config["llm_model"] = ctx.model.model
@@ -191,6 +214,28 @@ SUITES: dict[tuple[str, str, str], SuiteSpec] = {
             "chunks_per_query": _HYDE_CHUNKS_PER_QUERY,
             "max_retrieved_chunks": _HYDE_MAX_RETRIEVED_CHUNKS,
         },
+    ),
+    # HyPE -- same suites as hyde, for a direct HyDE-vs-HyPE comparison.
+    # No LLM call at query time (setup just opens the precomputed HyPE
+    # vector store); the LLM cost was paid once, at src/hype_ingestion.py
+    # ingestion time, not per query.
+    ("rag_retrieval", "hype", "single_source_queries"): SuiteSpec(
+        qrels=_SINGLE_SOURCE_QRELS,
+        setup=_load_hype_vectorstore,
+        evaluate_one=_evaluate_query_hype,
+        retrieval_config={"k": _HYPE_K},
+    ),
+    ("rag_retrieval", "hype", "synthetic_robustness_queries"): SuiteSpec(
+        qrels=_ROBUSTNESS_CHECKOUT_QRELS,
+        setup=_load_hype_vectorstore,
+        evaluate_one=_evaluate_query_hype,
+        retrieval_config={"k": _HYPE_K},
+    ),
+    ("rag_retrieval", "hype", "synthetic_robustness_other_services"): SuiteSpec(
+        qrels=_ROBUSTNESS_OTHER_SERVICES_QRELS,
+        setup=_load_hype_vectorstore,
+        evaluate_one=_evaluate_query_hype,
+        retrieval_config={"k": _HYPE_K},
     ),
     ("rag_retrieval", "no_hyde_bm25_hybrid", "single_source_queries"): SuiteSpec(
         qrels=_SINGLE_SOURCE_QRELS,
