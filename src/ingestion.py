@@ -96,6 +96,26 @@ MAX_CHUNK_TOKENS = 230
 
 FRONTMATTER_RE = re.compile(r"^---\n.*?\n---\n", re.DOTALL)
 
+# Every source filename's service identifier -- covers both latest_runbooks/
+# (mixed markdown/PDF/DOCX) and the legacy all-markdown runbooks/, plus
+# postmorterms/. Markdown sources also carry this in `service:` frontmatter,
+# but PDF/DOCX (extracted as plain text, no frontmatter) have no other way
+# to recover it, so a single explicit map is used for every source rather
+# than parsing frontmatter for some and hardcoding others. Same pattern as
+# eval/source_aliases.py's SOURCE_ALIASES for the same PDF/DOCX filenames.
+SOURCE_TO_SERVICE: dict[str, str] = {
+    "auth-service-runbook.md": "auth-service",
+    "listing-service-runbook.md": "listing-service",
+    "checkout-api-runbook.md": "checkout-api",
+    "checkout_api_runbook.pdf": "checkout-api",
+    "payment-service-runbook.md": "payment-service",
+    "payment_service_errors.pdf": "payment-service",
+    "cart_api_errors.docx": "cart-api",
+    "2026-03-checkout-outage-cache.md": "checkout-api",
+    "2026-05-checkout-outage.md": "checkout-api",
+    "2026-07-payment-service-cascade.md": "payment-service",
+}
+
 
 def strip_frontmatter(text: str) -> str:
     """Remove YAML frontmatter block from the top of a markdown document."""
@@ -235,6 +255,7 @@ def semantic_chunk_text(
     text: str,
     source: str,
     embeddings: HuggingFaceEmbeddings,
+    doc_type: str,
 ) -> list[Document]:
     """
     Chunk a document's plain text using semantic similarity.
@@ -247,6 +268,17 @@ def semantic_chunk_text(
 
     The embeddings object is passed in (not created here) so the caller can
     reuse the same model instance for both chunking and the vector store.
+
+    doc_type ("runbook" or "postmortem") is the caller's to know -- it's
+    determined by which directory the source document came from, not parsed
+    back out of content/frontmatter here -- and gets stamped onto every
+    chunk's metadata so downstream consumers (e.g. HyPE's question
+    generation) can treat runbook and postmortem chunks differently.
+
+    Also stamps metadata["service"] from SOURCE_TO_SERVICE -- fails loudly
+    (KeyError) on an unmapped source rather than silently omitting it, since
+    a chunk with no service identifier is exactly the failure mode this
+    exists to prevent downstream.
     """
     chunker = SemanticChunker(
         embeddings,
@@ -263,6 +295,8 @@ def semantic_chunk_text(
         chunk.metadata["source"] = source
         chunk.metadata["section"] = first_line[:80]
         chunk.metadata["format"] = "semantic"
+        chunk.metadata["doc_type"] = doc_type
+        chunk.metadata["service"] = SOURCE_TO_SERVICE[source]
 
     return _safety_split(chunks)
 
@@ -342,7 +376,7 @@ def build_vectorstore(
     print(f"\nRunbook corpus ({runbooks_dir.name}, semantic chunking):")
     if runbooks_dir.exists():
         for filename, content in load_mixed_format_documents(runbooks_dir):
-            chunks = semantic_chunk_text(content, filename, embeddings)
+            chunks = semantic_chunk_text(content, filename, embeddings, doc_type="runbook")
             all_chunks.extend(chunks)
             print(f"  {filename}: {len(chunks)} chunks [semantic]")
 
@@ -350,7 +384,7 @@ def build_vectorstore(
     print("\nPostmortem corpus (semantic chunking):")
     if POSTMORTEMS_DIR.exists():
         for filename, content in load_markdown_documents([POSTMORTEMS_DIR]):
-            chunks = semantic_chunk_text(content, filename, embeddings)
+            chunks = semantic_chunk_text(content, filename, embeddings, doc_type="postmortem")
             all_chunks.extend(chunks)
             print(f"  {filename}: {len(chunks)} chunks [semantic]")
 

@@ -1,12 +1,12 @@
 {
-  "run_id": "rag_retrieval__hype__e6901433",
+  "run_id": "rag_retrieval__hype__d0940a94",
   "category": "rag_retrieval",
   "mode": "hype",
-  "created_at": "2026-08-02T06:13:07Z",
+  "created_at": "2026-08-02T05:33:03Z",
   "repeats": 1,
   "git_commit": "37e008a0f1ae7f87d952e32da0629b28de7082c9",
   "git_dirty": true,
-  "description": "doc_type-aware + service-name-guaranteed HyPE question prompt (fixes checkout-competition regression, beats prior baseline on pooled recall/RR)",
+  "description": "doc_type-aware HyPE question-generation prompt (runbook vs postmortem guidance)",
   "pipeline_config": {
     "corpus": "latest_runbooks+postmorterms",
     "embedding_model": "all-MiniLM-L6-v2",
@@ -16,7 +16,7 @@
     "source_chunk_count": 23,
     "question_embedding_count": 69,
     "hnsw_space": "cosine",
-    "ingested_at": "2026-08-02T06:12:25Z",
+    "ingested_at": "2026-08-02T05:32:01Z",
     "hype_vectorstore_git_commit": "37e008a0f1ae7f87d952e32da0629b28de7082c9"
   },
   "suites": {
@@ -33,7 +33,7 @@
               "query": "checkout-api p99 latency climbing, active_connections pinned at max_connections",
               "identifier": "checkout-api-runbook.md",
               "metrics": {
-                "precision": 0.3333333333333333,
+                "precision": 0.16666666666666666,
                 "recall": 1.0,
                 "reciprocal_rank": 1.0
               }
@@ -42,18 +42,18 @@
               "query": "checkout-api error rate climbing with 400 Bad Request responses",
               "identifier": "checkout-api-runbook.md",
               "metrics": {
-                "precision": 0.16666666666666666,
-                "recall": 1.0,
-                "reciprocal_rank": 0.25
+                "precision": 0.0,
+                "recall": 0.0,
+                "reciprocal_rank": 0.0
               }
             },
             {
               "query": "auth-service latency spike, cache_hit_ratio dropped suddenly",
               "identifier": "auth-service-runbook.md",
               "metrics": {
-                "precision": 0.16666666666666666,
-                "recall": 1.0,
-                "reciprocal_rank": 0.3333333333333333
+                "precision": 0.0,
+                "recall": 0.0,
+                "reciprocal_rank": 0.0
               }
             },
             {
@@ -69,49 +69,49 @@
               "query": "payment-service connection pool exhaustion, could not obtain connection from pool",
               "identifier": "payment-service-runbook.md",
               "metrics": {
-                "precision": 0.16666666666666666,
-                "recall": 1.0,
-                "reciprocal_rank": 0.3333333333333333
+                "precision": 0.0,
+                "recall": 0.0,
+                "reciprocal_rank": 0.0
               }
             }
           ],
           "summary_metrics": {
-            "precision": 0.2,
-            "recall": 1.0,
-            "reciprocal_rank": 0.5833333333333333
+            "precision": 0.06666666666666667,
+            "recall": 0.4,
+            "reciprocal_rank": 0.4
           }
         }
       ],
       "aggregate_metrics": {
         "precision": {
-          "mean": 0.2,
+          "mean": 0.06666666666666667,
           "std": 0.0,
-          "min": 0.2,
-          "max": 0.2,
+          "min": 0.06666666666666667,
+          "max": 0.06666666666666667,
           "n": 1
         },
         "recall": {
-          "mean": 1.0,
+          "mean": 0.4,
           "std": 0.0,
-          "min": 1.0,
-          "max": 1.0,
+          "min": 0.4,
+          "max": 0.4,
           "n": 1
         },
         "reciprocal_rank": {
-          "mean": 0.5833333333333333,
+          "mean": 0.4,
           "std": 0.0,
-          "min": 0.5833333333333333,
-          "max": 0.5833333333333333,
+          "min": 0.4,
+          "max": 0.4,
           "n": 1
         }
       },
       "per_query_aggregate": {
         "checkout-api p99 latency climbing, active_connections pinned at max_connections": {
           "precision": {
-            "mean": 0.3333333333333333,
+            "mean": 0.16666666666666666,
             "std": 0.0,
-            "min": 0.3333333333333333,
-            "max": 0.3333333333333333,
+            "min": 0.16666666666666666,
+            "max": 0.16666666666666666,
             "n": 1
           },
           "recall": {
@@ -131,47 +131,47 @@
         },
         "checkout-api error rate climbing with 400 Bad Request responses": {
           "precision": {
-            "mean": 0.16666666666666666,
+            "mean": 0.0,
             "std": 0.0,
-            "min": 0.16666666666666666,
-            "max": 0.16666666666666666,
+            "min": 0.0,
+            "max": 0.0,
             "n": 1
           },
           "recall": {
-            "mean": 1.0,
+            "mean": 0.0,
             "std": 0.0,
-            "min": 1.0,
-            "max": 1.0,
+            "min": 0.0,
+            "max": 0.0,
             "n": 1
           },
           "reciprocal_rank": {
-            "mean": 0.25,
+            "mean": 0.0,
             "std": 0.0,
-            "min": 0.25,
-            "max": 0.25,
+            "min": 0.0,
+            "max": 0.0,
             "n": 1
           }
         },
         "auth-service latency spike, cache_hit_ratio dropped suddenly": {
           "precision": {
-            "mean": 0.16666666666666666,
+            "mean": 0.0,
             "std": 0.0,
-            "min": 0.16666666666666666,
-            "max": 0.16666666666666666,
+            "min": 0.0,
+            "max": 0.0,
             "n": 1
           },
           "recall": {
-            "mean": 1.0,
+            "mean": 0.0,
             "std": 0.0,
-            "min": 1.0,
-            "max": 1.0,
+            "min": 0.0,
+            "max": 0.0,
             "n": 1
           },
           "reciprocal_rank": {
-            "mean": 0.3333333333333333,
+            "mean": 0.0,
             "std": 0.0,
-            "min": 0.3333333333333333,
-            "max": 0.3333333333333333,
+            "min": 0.0,
+            "max": 0.0,
             "n": 1
           }
         },
@@ -200,24 +200,24 @@
         },
         "payment-service connection pool exhaustion, could not obtain connection from pool": {
           "precision": {
-            "mean": 0.16666666666666666,
+            "mean": 0.0,
             "std": 0.0,
-            "min": 0.16666666666666666,
-            "max": 0.16666666666666666,
+            "min": 0.0,
+            "max": 0.0,
             "n": 1
           },
           "recall": {
-            "mean": 1.0,
+            "mean": 0.0,
             "std": 0.0,
-            "min": 1.0,
-            "max": 1.0,
+            "min": 0.0,
+            "max": 0.0,
             "n": 1
           },
           "reciprocal_rank": {
-            "mean": 0.3333333333333333,
+            "mean": 0.0,
             "std": 0.0,
-            "min": 0.3333333333333333,
-            "max": 0.3333333333333333,
+            "min": 0.0,
+            "max": 0.0,
             "n": 1
           }
         }
@@ -238,7 +238,7 @@
               "metrics": {
                 "precision": 0.16666666666666666,
                 "recall": 1.0,
-                "reciprocal_rank": 0.5
+                "reciprocal_rank": 0.25
               }
             },
             {
@@ -247,16 +247,16 @@
               "metrics": {
                 "precision": 0.16666666666666666,
                 "recall": 1.0,
-                "reciprocal_rank": 0.5
+                "reciprocal_rank": 0.2
               }
             },
             {
               "query": "checkout service response time has gone up",
               "identifier": "checkout-api-runbook.md",
               "metrics": {
-                "precision": 0.16666666666666666,
-                "recall": 1.0,
-                "reciprocal_rank": 1.0
+                "precision": 0.0,
+                "recall": 0.0,
+                "reciprocal_rank": 0.0
               }
             },
             {
@@ -264,8 +264,8 @@
               "identifier": "checkout-api-runbook.md",
               "metrics": {
                 "precision": 0.16666666666666666,
-                "recall": 0.5,
-                "reciprocal_rank": 0.25
+                "recall": 1.0,
+                "reciprocal_rank": 0.16666666666666666
               }
             },
             {
@@ -274,29 +274,11 @@
               "metrics": {
                 "precision": 0.16666666666666666,
                 "recall": 1.0,
-                "reciprocal_rank": 1.0
-              }
-            },
-            {
-              "query": "checkout srv resposne time is high",
-              "identifier": "checkout-api-runbook.md",
-              "metrics": {
-                "precision": 0.3333333333333333,
-                "recall": 1.0,
                 "reciprocal_rank": 0.5
               }
             },
             {
-              "query": "chckout srv taking longer than usual",
-              "identifier": "checkout-api-runbook.md",
-              "metrics": {
-                "precision": 0.16666666666666666,
-                "recall": 1.0,
-                "reciprocal_rank": 0.25
-              }
-            },
-            {
-              "query": "chckout srv response time has increaed",
+              "query": "checkout srv resposne time is high",
               "identifier": "checkout-api-runbook.md",
               "metrics": {
                 "precision": 0.16666666666666666,
@@ -305,39 +287,57 @@
               }
             },
             {
+              "query": "chckout srv taking longer than usual",
+              "identifier": "checkout-api-runbook.md",
+              "metrics": {
+                "precision": 0.16666666666666666,
+                "recall": 0.5,
+                "reciprocal_rank": 1.0
+              }
+            },
+            {
+              "query": "chckout srv response time has increaed",
+              "identifier": "checkout-api-runbook.md",
+              "metrics": {
+                "precision": 0.16666666666666666,
+                "recall": 0.5,
+                "reciprocal_rank": 0.25
+              }
+            },
+            {
               "query": "checkout-api might be some kind of connection/pooling issue",
               "identifier": "checkout-api-runbook.md",
               "metrics": {
                 "precision": 0.16666666666666666,
                 "recall": 1.0,
-                "reciprocal_rank": 0.2
+                "reciprocal_rank": 1.0
               }
             },
             {
               "query": "checkout service connections maxed out maybe",
               "identifier": "checkout-api-runbook.md",
               "metrics": {
-                "precision": 0.0,
-                "recall": 0.0,
-                "reciprocal_rank": 0.0
+                "precision": 0.16666666666666666,
+                "recall": 1.0,
+                "reciprocal_rank": 1.0
               }
             },
             {
               "query": "checkout srv think its a pool problem",
               "identifier": "checkout-api-runbook.md",
               "metrics": {
-                "precision": 0.0,
-                "recall": 0.0,
-                "reciprocal_rank": 0.0
+                "precision": 0.3333333333333333,
+                "recall": 1.0,
+                "reciprocal_rank": 1.0
               }
             },
             {
               "query": "chckout srv possibly a db connection issue",
               "identifier": "checkout-api-runbook.md",
               "metrics": {
-                "precision": 0.0,
-                "recall": 0.0,
-                "reciprocal_rank": 0.0
+                "precision": 0.16666666666666666,
+                "recall": 1.0,
+                "reciprocal_rank": 0.2
               }
             },
             {
@@ -389,18 +389,18 @@
               "query": "checkout srv checkuot is throwing errors",
               "identifier": "checkout-api-runbook.md",
               "metrics": {
-                "precision": 0.0,
-                "recall": 0.0,
-                "reciprocal_rank": 0.0
+                "precision": 0.16666666666666666,
+                "recall": 1.0,
+                "reciprocal_rank": 0.16666666666666666
               }
             },
             {
               "query": "chckout srv getting a lot of failed requests",
               "identifier": "checkout-api-runbook.md",
               "metrics": {
-                "precision": 0.0,
-                "recall": 0.0,
-                "reciprocal_rank": 0.0
+                "precision": 0.16666666666666666,
+                "recall": 1.0,
+                "reciprocal_rank": 0.25
               }
             },
             {
@@ -434,81 +434,81 @@
               "query": "checkout srv maybe a validation issue with the payload",
               "identifier": "checkout-api-runbook.md",
               "metrics": {
-                "precision": 0.16666666666666666,
-                "recall": 1.0,
-                "reciprocal_rank": 0.2
+                "precision": 0.0,
+                "recall": 0.0,
+                "reciprocal_rank": 0.0
               }
             },
             {
               "query": "chckout srv possibly a request contract problem",
               "identifier": "checkout-api-runbook.md",
               "metrics": {
-                "precision": 0.16666666666666666,
-                "recall": 1.0,
-                "reciprocal_rank": 0.2
+                "precision": 0.0,
+                "recall": 0.0,
+                "reciprocal_rank": 0.0
               }
             },
             {
               "query": "checkout-api getting a lot of login failures",
               "identifier": "checkout-api-runbook.md",
               "metrics": {
-                "precision": 0.16666666666666666,
-                "recall": 1.0,
-                "reciprocal_rank": 0.5
+                "precision": 0.0,
+                "recall": 0.0,
+                "reciprocal_rank": 0.0
               }
             },
             {
               "query": "checkout-api seeing atuh errors",
               "identifier": "checkout-api-runbook.md",
               "metrics": {
-                "precision": 0.16666666666666666,
-                "recall": 1.0,
-                "reciprocal_rank": 0.2
+                "precision": 0.0,
+                "recall": 0.0,
+                "reciprocal_rank": 0.0
               }
             },
             {
               "query": "checkout service users cant log in",
               "identifier": "checkout-api-runbook.md",
               "metrics": {
-                "precision": 0.16666666666666666,
-                "recall": 1.0,
-                "reciprocal_rank": 0.3333333333333333
+                "precision": 0.0,
+                "recall": 0.0,
+                "reciprocal_rank": 0.0
               }
             },
             {
               "query": "checkout service usres cant log in",
               "identifier": "checkout-api-runbook.md",
               "metrics": {
-                "precision": 0.16666666666666666,
-                "recall": 1.0,
-                "reciprocal_rank": 0.2
+                "precision": 0.0,
+                "recall": 0.0,
+                "reciprocal_rank": 0.0
               }
             },
             {
               "query": "checkout srv seeing auth errors",
               "identifier": "checkout-api-runbook.md",
               "metrics": {
-                "precision": 0.16666666666666666,
-                "recall": 1.0,
-                "reciprocal_rank": 0.5
+                "precision": 0.0,
+                "recall": 0.0,
+                "reciprocal_rank": 0.0
               }
             },
             {
               "query": "checkout srv getting loginn failures",
               "identifier": "checkout-api-runbook.md",
               "metrics": {
-                "precision": 0.16666666666666666,
-                "recall": 1.0,
-                "reciprocal_rank": 0.2
+                "precision": 0.0,
+                "recall": 0.0,
+                "reciprocal_rank": 0.0
               }
             },
             {
               "query": "chckout srv customers getting logged out randomly",
               "identifier": "checkout-api-runbook.md",
               "metrics": {
-                "precision": 0.16666666666666666,
-                "recall": 1.0,
-                "reciprocal_rank": 0.3333333333333333
+                "precision": 0.0,
+                "recall": 0.0,
+                "reciprocal_rank": 0.0
               }
             },
             {
@@ -524,9 +524,9 @@
               "query": "checkout-api might be a token or auth issue",
               "identifier": "checkout-api-runbook.md",
               "metrics": {
-                "precision": 0.16666666666666666,
-                "recall": 1.0,
-                "reciprocal_rank": 0.3333333333333333
+                "precision": 0.0,
+                "recall": 0.0,
+                "reciprocal_rank": 0.0
               }
             },
             {
@@ -542,48 +542,48 @@
               "query": "checkout srv maybe auth tokens are stale",
               "identifier": "checkout-api-runbook.md",
               "metrics": {
-                "precision": 0.16666666666666666,
-                "recall": 1.0,
-                "reciprocal_rank": 0.3333333333333333
+                "precision": 0.0,
+                "recall": 0.0,
+                "reciprocal_rank": 0.0
               }
             },
             {
               "query": "chckout srv possibly a token rotation issue",
               "identifier": "checkout-api-runbook.md",
               "metrics": {
-                "precision": 0.16666666666666666,
-                "recall": 1.0,
-                "reciprocal_rank": 0.25
+                "precision": 0.0,
+                "recall": 0.0,
+                "reciprocal_rank": 0.0
               }
             }
           ],
           "summary_metrics": {
-            "precision": 0.10185185185185185,
-            "recall": 0.5694444444444444,
-            "reciprocal_rank": 0.22546296296296298
+            "precision": 0.06481481481481481,
+            "recall": 0.3333333333333333,
+            "reciprocal_rank": 0.17546296296296296
           }
         }
       ],
       "aggregate_metrics": {
         "precision": {
-          "mean": 0.10185185185185185,
+          "mean": 0.06481481481481481,
           "std": 0.0,
-          "min": 0.10185185185185185,
-          "max": 0.10185185185185185,
+          "min": 0.06481481481481481,
+          "max": 0.06481481481481481,
           "n": 1
         },
         "recall": {
-          "mean": 0.5694444444444444,
+          "mean": 0.3333333333333333,
           "std": 0.0,
-          "min": 0.5694444444444444,
-          "max": 0.5694444444444444,
+          "min": 0.3333333333333333,
+          "max": 0.3333333333333333,
           "n": 1
         },
         "reciprocal_rank": {
-          "mean": 0.22546296296296298,
+          "mean": 0.17546296296296296,
           "std": 0.0,
-          "min": 0.22546296296296298,
-          "max": 0.22546296296296298,
+          "min": 0.17546296296296296,
+          "max": 0.17546296296296296,
           "n": 1
         }
       },
@@ -604,175 +604,14 @@
             "n": 1
           },
           "reciprocal_rank": {
-            "mean": 0.5,
+            "mean": 0.25,
             "std": 0.0,
-            "min": 0.5,
-            "max": 0.5,
+            "min": 0.25,
+            "max": 0.25,
             "n": 1
           }
         },
         "checkout-api latencyy has increased": {
-          "precision": {
-            "mean": 0.16666666666666666,
-            "std": 0.0,
-            "min": 0.16666666666666666,
-            "max": 0.16666666666666666,
-            "n": 1
-          },
-          "recall": {
-            "mean": 1.0,
-            "std": 0.0,
-            "min": 1.0,
-            "max": 1.0,
-            "n": 1
-          },
-          "reciprocal_rank": {
-            "mean": 0.5,
-            "std": 0.0,
-            "min": 0.5,
-            "max": 0.5,
-            "n": 1
-          }
-        },
-        "checkout service response time has gone up": {
-          "precision": {
-            "mean": 0.16666666666666666,
-            "std": 0.0,
-            "min": 0.16666666666666666,
-            "max": 0.16666666666666666,
-            "n": 1
-          },
-          "recall": {
-            "mean": 1.0,
-            "std": 0.0,
-            "min": 1.0,
-            "max": 1.0,
-            "n": 1
-          },
-          "reciprocal_rank": {
-            "mean": 1.0,
-            "std": 0.0,
-            "min": 1.0,
-            "max": 1.0,
-            "n": 1
-          }
-        },
-        "checkout service latenci has spiked": {
-          "precision": {
-            "mean": 0.16666666666666666,
-            "std": 0.0,
-            "min": 0.16666666666666666,
-            "max": 0.16666666666666666,
-            "n": 1
-          },
-          "recall": {
-            "mean": 0.5,
-            "std": 0.0,
-            "min": 0.5,
-            "max": 0.5,
-            "n": 1
-          },
-          "reciprocal_rank": {
-            "mean": 0.25,
-            "std": 0.0,
-            "min": 0.25,
-            "max": 0.25,
-            "n": 1
-          }
-        },
-        "checkout srv feels slow": {
-          "precision": {
-            "mean": 0.16666666666666666,
-            "std": 0.0,
-            "min": 0.16666666666666666,
-            "max": 0.16666666666666666,
-            "n": 1
-          },
-          "recall": {
-            "mean": 1.0,
-            "std": 0.0,
-            "min": 1.0,
-            "max": 1.0,
-            "n": 1
-          },
-          "reciprocal_rank": {
-            "mean": 1.0,
-            "std": 0.0,
-            "min": 1.0,
-            "max": 1.0,
-            "n": 1
-          }
-        },
-        "checkout srv resposne time is high": {
-          "precision": {
-            "mean": 0.3333333333333333,
-            "std": 0.0,
-            "min": 0.3333333333333333,
-            "max": 0.3333333333333333,
-            "n": 1
-          },
-          "recall": {
-            "mean": 1.0,
-            "std": 0.0,
-            "min": 1.0,
-            "max": 1.0,
-            "n": 1
-          },
-          "reciprocal_rank": {
-            "mean": 0.5,
-            "std": 0.0,
-            "min": 0.5,
-            "max": 0.5,
-            "n": 1
-          }
-        },
-        "chckout srv taking longer than usual": {
-          "precision": {
-            "mean": 0.16666666666666666,
-            "std": 0.0,
-            "min": 0.16666666666666666,
-            "max": 0.16666666666666666,
-            "n": 1
-          },
-          "recall": {
-            "mean": 1.0,
-            "std": 0.0,
-            "min": 1.0,
-            "max": 1.0,
-            "n": 1
-          },
-          "reciprocal_rank": {
-            "mean": 0.25,
-            "std": 0.0,
-            "min": 0.25,
-            "max": 0.25,
-            "n": 1
-          }
-        },
-        "chckout srv response time has increaed": {
-          "precision": {
-            "mean": 0.16666666666666666,
-            "std": 0.0,
-            "min": 0.16666666666666666,
-            "max": 0.16666666666666666,
-            "n": 1
-          },
-          "recall": {
-            "mean": 1.0,
-            "std": 0.0,
-            "min": 1.0,
-            "max": 1.0,
-            "n": 1
-          },
-          "reciprocal_rank": {
-            "mean": 0.3333333333333333,
-            "std": 0.0,
-            "min": 0.3333333333333333,
-            "max": 0.3333333333333333,
-            "n": 1
-          }
-        },
-        "checkout-api might be some kind of connection/pooling issue": {
           "precision": {
             "mean": 0.16666666666666666,
             "std": 0.0,
@@ -795,7 +634,7 @@
             "n": 1
           }
         },
-        "checkout service connections maxed out maybe": {
+        "checkout service response time has gone up": {
           "precision": {
             "mean": 0.0,
             "std": 0.0,
@@ -815,52 +654,213 @@
             "std": 0.0,
             "min": 0.0,
             "max": 0.0,
+            "n": 1
+          }
+        },
+        "checkout service latenci has spiked": {
+          "precision": {
+            "mean": 0.16666666666666666,
+            "std": 0.0,
+            "min": 0.16666666666666666,
+            "max": 0.16666666666666666,
+            "n": 1
+          },
+          "recall": {
+            "mean": 1.0,
+            "std": 0.0,
+            "min": 1.0,
+            "max": 1.0,
+            "n": 1
+          },
+          "reciprocal_rank": {
+            "mean": 0.16666666666666666,
+            "std": 0.0,
+            "min": 0.16666666666666666,
+            "max": 0.16666666666666666,
+            "n": 1
+          }
+        },
+        "checkout srv feels slow": {
+          "precision": {
+            "mean": 0.16666666666666666,
+            "std": 0.0,
+            "min": 0.16666666666666666,
+            "max": 0.16666666666666666,
+            "n": 1
+          },
+          "recall": {
+            "mean": 1.0,
+            "std": 0.0,
+            "min": 1.0,
+            "max": 1.0,
+            "n": 1
+          },
+          "reciprocal_rank": {
+            "mean": 0.5,
+            "std": 0.0,
+            "min": 0.5,
+            "max": 0.5,
+            "n": 1
+          }
+        },
+        "checkout srv resposne time is high": {
+          "precision": {
+            "mean": 0.16666666666666666,
+            "std": 0.0,
+            "min": 0.16666666666666666,
+            "max": 0.16666666666666666,
+            "n": 1
+          },
+          "recall": {
+            "mean": 1.0,
+            "std": 0.0,
+            "min": 1.0,
+            "max": 1.0,
+            "n": 1
+          },
+          "reciprocal_rank": {
+            "mean": 0.3333333333333333,
+            "std": 0.0,
+            "min": 0.3333333333333333,
+            "max": 0.3333333333333333,
+            "n": 1
+          }
+        },
+        "chckout srv taking longer than usual": {
+          "precision": {
+            "mean": 0.16666666666666666,
+            "std": 0.0,
+            "min": 0.16666666666666666,
+            "max": 0.16666666666666666,
+            "n": 1
+          },
+          "recall": {
+            "mean": 0.5,
+            "std": 0.0,
+            "min": 0.5,
+            "max": 0.5,
+            "n": 1
+          },
+          "reciprocal_rank": {
+            "mean": 1.0,
+            "std": 0.0,
+            "min": 1.0,
+            "max": 1.0,
+            "n": 1
+          }
+        },
+        "chckout srv response time has increaed": {
+          "precision": {
+            "mean": 0.16666666666666666,
+            "std": 0.0,
+            "min": 0.16666666666666666,
+            "max": 0.16666666666666666,
+            "n": 1
+          },
+          "recall": {
+            "mean": 0.5,
+            "std": 0.0,
+            "min": 0.5,
+            "max": 0.5,
+            "n": 1
+          },
+          "reciprocal_rank": {
+            "mean": 0.25,
+            "std": 0.0,
+            "min": 0.25,
+            "max": 0.25,
+            "n": 1
+          }
+        },
+        "checkout-api might be some kind of connection/pooling issue": {
+          "precision": {
+            "mean": 0.16666666666666666,
+            "std": 0.0,
+            "min": 0.16666666666666666,
+            "max": 0.16666666666666666,
+            "n": 1
+          },
+          "recall": {
+            "mean": 1.0,
+            "std": 0.0,
+            "min": 1.0,
+            "max": 1.0,
+            "n": 1
+          },
+          "reciprocal_rank": {
+            "mean": 1.0,
+            "std": 0.0,
+            "min": 1.0,
+            "max": 1.0,
+            "n": 1
+          }
+        },
+        "checkout service connections maxed out maybe": {
+          "precision": {
+            "mean": 0.16666666666666666,
+            "std": 0.0,
+            "min": 0.16666666666666666,
+            "max": 0.16666666666666666,
+            "n": 1
+          },
+          "recall": {
+            "mean": 1.0,
+            "std": 0.0,
+            "min": 1.0,
+            "max": 1.0,
+            "n": 1
+          },
+          "reciprocal_rank": {
+            "mean": 1.0,
+            "std": 0.0,
+            "min": 1.0,
+            "max": 1.0,
             "n": 1
           }
         },
         "checkout srv think its a pool problem": {
           "precision": {
-            "mean": 0.0,
+            "mean": 0.3333333333333333,
             "std": 0.0,
-            "min": 0.0,
-            "max": 0.0,
+            "min": 0.3333333333333333,
+            "max": 0.3333333333333333,
             "n": 1
           },
           "recall": {
-            "mean": 0.0,
+            "mean": 1.0,
             "std": 0.0,
-            "min": 0.0,
-            "max": 0.0,
+            "min": 1.0,
+            "max": 1.0,
             "n": 1
           },
           "reciprocal_rank": {
-            "mean": 0.0,
+            "mean": 1.0,
             "std": 0.0,
-            "min": 0.0,
-            "max": 0.0,
+            "min": 1.0,
+            "max": 1.0,
             "n": 1
           }
         },
         "chckout srv possibly a db connection issue": {
           "precision": {
-            "mean": 0.0,
+            "mean": 0.16666666666666666,
             "std": 0.0,
-            "min": 0.0,
-            "max": 0.0,
+            "min": 0.16666666666666666,
+            "max": 0.16666666666666666,
             "n": 1
           },
           "recall": {
-            "mean": 0.0,
+            "mean": 1.0,
             "std": 0.0,
-            "min": 0.0,
-            "max": 0.0,
+            "min": 1.0,
+            "max": 1.0,
             "n": 1
           },
           "reciprocal_rank": {
-            "mean": 0.0,
+            "mean": 0.2,
             "std": 0.0,
-            "min": 0.0,
-            "max": 0.0,
+            "min": 0.2,
+            "max": 0.2,
             "n": 1
           }
         },
@@ -981,47 +981,47 @@
         },
         "checkout srv checkuot is throwing errors": {
           "precision": {
-            "mean": 0.0,
+            "mean": 0.16666666666666666,
             "std": 0.0,
-            "min": 0.0,
-            "max": 0.0,
+            "min": 0.16666666666666666,
+            "max": 0.16666666666666666,
             "n": 1
           },
           "recall": {
-            "mean": 0.0,
+            "mean": 1.0,
             "std": 0.0,
-            "min": 0.0,
-            "max": 0.0,
+            "min": 1.0,
+            "max": 1.0,
             "n": 1
           },
           "reciprocal_rank": {
-            "mean": 0.0,
+            "mean": 0.16666666666666666,
             "std": 0.0,
-            "min": 0.0,
-            "max": 0.0,
+            "min": 0.16666666666666666,
+            "max": 0.16666666666666666,
             "n": 1
           }
         },
         "chckout srv getting a lot of failed requests": {
           "precision": {
-            "mean": 0.0,
+            "mean": 0.16666666666666666,
             "std": 0.0,
-            "min": 0.0,
-            "max": 0.0,
+            "min": 0.16666666666666666,
+            "max": 0.16666666666666666,
             "n": 1
           },
           "recall": {
-            "mean": 0.0,
+            "mean": 1.0,
             "std": 0.0,
-            "min": 0.0,
-            "max": 0.0,
+            "min": 1.0,
+            "max": 1.0,
             "n": 1
           },
           "reciprocal_rank": {
-            "mean": 0.0,
+            "mean": 0.25,
             "std": 0.0,
-            "min": 0.0,
-            "max": 0.0,
+            "min": 0.25,
+            "max": 0.25,
             "n": 1
           }
         },
@@ -1096,208 +1096,208 @@
         },
         "checkout srv maybe a validation issue with the payload": {
           "precision": {
-            "mean": 0.16666666666666666,
+            "mean": 0.0,
             "std": 0.0,
-            "min": 0.16666666666666666,
-            "max": 0.16666666666666666,
+            "min": 0.0,
+            "max": 0.0,
             "n": 1
           },
           "recall": {
-            "mean": 1.0,
+            "mean": 0.0,
             "std": 0.0,
-            "min": 1.0,
-            "max": 1.0,
+            "min": 0.0,
+            "max": 0.0,
             "n": 1
           },
           "reciprocal_rank": {
-            "mean": 0.2,
+            "mean": 0.0,
             "std": 0.0,
-            "min": 0.2,
-            "max": 0.2,
+            "min": 0.0,
+            "max": 0.0,
             "n": 1
           }
         },
         "chckout srv possibly a request contract problem": {
           "precision": {
-            "mean": 0.16666666666666666,
+            "mean": 0.0,
             "std": 0.0,
-            "min": 0.16666666666666666,
-            "max": 0.16666666666666666,
+            "min": 0.0,
+            "max": 0.0,
             "n": 1
           },
           "recall": {
-            "mean": 1.0,
+            "mean": 0.0,
             "std": 0.0,
-            "min": 1.0,
-            "max": 1.0,
+            "min": 0.0,
+            "max": 0.0,
             "n": 1
           },
           "reciprocal_rank": {
-            "mean": 0.2,
+            "mean": 0.0,
             "std": 0.0,
-            "min": 0.2,
-            "max": 0.2,
+            "min": 0.0,
+            "max": 0.0,
             "n": 1
           }
         },
         "checkout-api getting a lot of login failures": {
           "precision": {
-            "mean": 0.16666666666666666,
+            "mean": 0.0,
             "std": 0.0,
-            "min": 0.16666666666666666,
-            "max": 0.16666666666666666,
+            "min": 0.0,
+            "max": 0.0,
             "n": 1
           },
           "recall": {
-            "mean": 1.0,
+            "mean": 0.0,
             "std": 0.0,
-            "min": 1.0,
-            "max": 1.0,
+            "min": 0.0,
+            "max": 0.0,
             "n": 1
           },
           "reciprocal_rank": {
-            "mean": 0.5,
+            "mean": 0.0,
             "std": 0.0,
-            "min": 0.5,
-            "max": 0.5,
+            "min": 0.0,
+            "max": 0.0,
             "n": 1
           }
         },
         "checkout-api seeing atuh errors": {
           "precision": {
-            "mean": 0.16666666666666666,
+            "mean": 0.0,
             "std": 0.0,
-            "min": 0.16666666666666666,
-            "max": 0.16666666666666666,
+            "min": 0.0,
+            "max": 0.0,
             "n": 1
           },
           "recall": {
-            "mean": 1.0,
+            "mean": 0.0,
             "std": 0.0,
-            "min": 1.0,
-            "max": 1.0,
+            "min": 0.0,
+            "max": 0.0,
             "n": 1
           },
           "reciprocal_rank": {
-            "mean": 0.2,
+            "mean": 0.0,
             "std": 0.0,
-            "min": 0.2,
-            "max": 0.2,
+            "min": 0.0,
+            "max": 0.0,
             "n": 1
           }
         },
         "checkout service users cant log in": {
           "precision": {
-            "mean": 0.16666666666666666,
+            "mean": 0.0,
             "std": 0.0,
-            "min": 0.16666666666666666,
-            "max": 0.16666666666666666,
+            "min": 0.0,
+            "max": 0.0,
             "n": 1
           },
           "recall": {
-            "mean": 1.0,
+            "mean": 0.0,
             "std": 0.0,
-            "min": 1.0,
-            "max": 1.0,
+            "min": 0.0,
+            "max": 0.0,
             "n": 1
           },
           "reciprocal_rank": {
-            "mean": 0.3333333333333333,
+            "mean": 0.0,
             "std": 0.0,
-            "min": 0.3333333333333333,
-            "max": 0.3333333333333333,
+            "min": 0.0,
+            "max": 0.0,
             "n": 1
           }
         },
         "checkout service usres cant log in": {
           "precision": {
-            "mean": 0.16666666666666666,
+            "mean": 0.0,
             "std": 0.0,
-            "min": 0.16666666666666666,
-            "max": 0.16666666666666666,
+            "min": 0.0,
+            "max": 0.0,
             "n": 1
           },
           "recall": {
-            "mean": 1.0,
+            "mean": 0.0,
             "std": 0.0,
-            "min": 1.0,
-            "max": 1.0,
+            "min": 0.0,
+            "max": 0.0,
             "n": 1
           },
           "reciprocal_rank": {
-            "mean": 0.2,
+            "mean": 0.0,
             "std": 0.0,
-            "min": 0.2,
-            "max": 0.2,
+            "min": 0.0,
+            "max": 0.0,
             "n": 1
           }
         },
         "checkout srv seeing auth errors": {
           "precision": {
-            "mean": 0.16666666666666666,
+            "mean": 0.0,
             "std": 0.0,
-            "min": 0.16666666666666666,
-            "max": 0.16666666666666666,
+            "min": 0.0,
+            "max": 0.0,
             "n": 1
           },
           "recall": {
-            "mean": 1.0,
+            "mean": 0.0,
             "std": 0.0,
-            "min": 1.0,
-            "max": 1.0,
+            "min": 0.0,
+            "max": 0.0,
             "n": 1
           },
           "reciprocal_rank": {
-            "mean": 0.5,
+            "mean": 0.0,
             "std": 0.0,
-            "min": 0.5,
-            "max": 0.5,
+            "min": 0.0,
+            "max": 0.0,
             "n": 1
           }
         },
         "checkout srv getting loginn failures": {
           "precision": {
-            "mean": 0.16666666666666666,
+            "mean": 0.0,
             "std": 0.0,
-            "min": 0.16666666666666666,
-            "max": 0.16666666666666666,
+            "min": 0.0,
+            "max": 0.0,
             "n": 1
           },
           "recall": {
-            "mean": 1.0,
+            "mean": 0.0,
             "std": 0.0,
-            "min": 1.0,
-            "max": 1.0,
+            "min": 0.0,
+            "max": 0.0,
             "n": 1
           },
           "reciprocal_rank": {
-            "mean": 0.2,
+            "mean": 0.0,
             "std": 0.0,
-            "min": 0.2,
-            "max": 0.2,
+            "min": 0.0,
+            "max": 0.0,
             "n": 1
           }
         },
         "chckout srv customers getting logged out randomly": {
           "precision": {
-            "mean": 0.16666666666666666,
+            "mean": 0.0,
             "std": 0.0,
-            "min": 0.16666666666666666,
-            "max": 0.16666666666666666,
+            "min": 0.0,
+            "max": 0.0,
             "n": 1
           },
           "recall": {
-            "mean": 1.0,
+            "mean": 0.0,
             "std": 0.0,
-            "min": 1.0,
-            "max": 1.0,
+            "min": 0.0,
+            "max": 0.0,
             "n": 1
           },
           "reciprocal_rank": {
-            "mean": 0.3333333333333333,
+            "mean": 0.0,
             "std": 0.0,
-            "min": 0.3333333333333333,
-            "max": 0.3333333333333333,
+            "min": 0.0,
+            "max": 0.0,
             "n": 1
           }
         },
@@ -1326,24 +1326,24 @@
         },
         "checkout-api might be a token or auth issue": {
           "precision": {
-            "mean": 0.16666666666666666,
+            "mean": 0.0,
             "std": 0.0,
-            "min": 0.16666666666666666,
-            "max": 0.16666666666666666,
+            "min": 0.0,
+            "max": 0.0,
             "n": 1
           },
           "recall": {
-            "mean": 1.0,
+            "mean": 0.0,
             "std": 0.0,
-            "min": 1.0,
-            "max": 1.0,
+            "min": 0.0,
+            "max": 0.0,
             "n": 1
           },
           "reciprocal_rank": {
-            "mean": 0.3333333333333333,
+            "mean": 0.0,
             "std": 0.0,
-            "min": 0.3333333333333333,
-            "max": 0.3333333333333333,
+            "min": 0.0,
+            "max": 0.0,
             "n": 1
           }
         },
@@ -1372,47 +1372,47 @@
         },
         "checkout srv maybe auth tokens are stale": {
           "precision": {
-            "mean": 0.16666666666666666,
+            "mean": 0.0,
             "std": 0.0,
-            "min": 0.16666666666666666,
-            "max": 0.16666666666666666,
+            "min": 0.0,
+            "max": 0.0,
             "n": 1
           },
           "recall": {
-            "mean": 1.0,
+            "mean": 0.0,
             "std": 0.0,
-            "min": 1.0,
-            "max": 1.0,
+            "min": 0.0,
+            "max": 0.0,
             "n": 1
           },
           "reciprocal_rank": {
-            "mean": 0.3333333333333333,
+            "mean": 0.0,
             "std": 0.0,
-            "min": 0.3333333333333333,
-            "max": 0.3333333333333333,
+            "min": 0.0,
+            "max": 0.0,
             "n": 1
           }
         },
         "chckout srv possibly a token rotation issue": {
           "precision": {
-            "mean": 0.16666666666666666,
+            "mean": 0.0,
             "std": 0.0,
-            "min": 0.16666666666666666,
-            "max": 0.16666666666666666,
+            "min": 0.0,
+            "max": 0.0,
             "n": 1
           },
           "recall": {
-            "mean": 1.0,
+            "mean": 0.0,
             "std": 0.0,
-            "min": 1.0,
-            "max": 1.0,
+            "min": 0.0,
+            "max": 0.0,
             "n": 1
           },
           "reciprocal_rank": {
-            "mean": 0.25,
+            "mean": 0.0,
             "std": 0.0,
-            "min": 0.25,
-            "max": 0.25,
+            "min": 0.0,
+            "max": 0.0,
             "n": 1
           }
         }
@@ -1431,36 +1431,36 @@
               "query": "auth-service response time has gone up",
               "identifier": "auth-service-runbook.md",
               "metrics": {
-                "precision": 0.16666666666666666,
-                "recall": 1.0,
-                "reciprocal_rank": 0.3333333333333333
+                "precision": 0.0,
+                "recall": 0.0,
+                "reciprocal_rank": 0.0
               }
             },
             {
               "query": "auth-service latencyy has increased",
               "identifier": "auth-service-runbook.md",
               "metrics": {
-                "precision": 0.16666666666666666,
-                "recall": 1.0,
-                "reciprocal_rank": 0.3333333333333333
+                "precision": 0.0,
+                "recall": 0.0,
+                "reciprocal_rank": 0.0
               }
             },
             {
               "query": "auth service feels slow",
               "identifier": "auth-service-runbook.md",
               "metrics": {
-                "precision": 0.16666666666666666,
-                "recall": 1.0,
-                "reciprocal_rank": 0.3333333333333333
+                "precision": 0.0,
+                "recall": 0.0,
+                "reciprocal_rank": 0.0
               }
             },
             {
               "query": "auth service resposne time is high",
               "identifier": "auth-service-runbook.md",
               "metrics": {
-                "precision": 0.16666666666666666,
-                "recall": 1.0,
-                "reciprocal_rank": 0.3333333333333333
+                "precision": 0.0,
+                "recall": 0.0,
+                "reciprocal_rank": 0.0
               }
             },
             {
@@ -1469,7 +1469,7 @@
               "metrics": {
                 "precision": 0.16666666666666666,
                 "recall": 1.0,
-                "reciprocal_rank": 0.3333333333333333
+                "reciprocal_rank": 0.25
               }
             },
             {
@@ -1478,34 +1478,34 @@
               "metrics": {
                 "precision": 0.16666666666666666,
                 "recall": 1.0,
-                "reciprocal_rank": 0.3333333333333333
+                "reciprocal_rank": 0.25
               }
             },
             {
               "query": "athu service response time has gone up",
               "identifier": "auth-service-runbook.md",
               "metrics": {
-                "precision": 0.16666666666666666,
-                "recall": 1.0,
-                "reciprocal_rank": 0.16666666666666666
+                "precision": 0.0,
+                "recall": 0.0,
+                "reciprocal_rank": 0.0
               }
             },
             {
               "query": "athu service latencyy has increased",
               "identifier": "auth-service-runbook.md",
               "metrics": {
-                "precision": 0.16666666666666666,
-                "recall": 1.0,
-                "reciprocal_rank": 0.2
+                "precision": 0.0,
+                "recall": 0.0,
+                "reciprocal_rank": 0.0
               }
             },
             {
               "query": "auth-service might be a cache or redis issue",
               "identifier": "auth-service-runbook.md",
               "metrics": {
-                "precision": 0.16666666666666666,
-                "recall": 1.0,
-                "reciprocal_rank": 1.0
+                "precision": 0.0,
+                "recall": 0.0,
+                "reciprocal_rank": 0.0
               }
             },
             {
@@ -1514,7 +1514,7 @@
               "metrics": {
                 "precision": 0.16666666666666666,
                 "recall": 1.0,
-                "reciprocal_rank": 0.5
+                "reciprocal_rank": 0.25
               }
             },
             {
@@ -1523,7 +1523,7 @@
               "metrics": {
                 "precision": 0.16666666666666666,
                 "recall": 1.0,
-                "reciprocal_rank": 0.5
+                "reciprocal_rank": 0.2
               }
             },
             {
@@ -1532,7 +1532,7 @@
               "metrics": {
                 "precision": 0.16666666666666666,
                 "recall": 1.0,
-                "reciprocal_rank": 0.3333333333333333
+                "reciprocal_rank": 0.2
               }
             },
             {
@@ -1593,9 +1593,9 @@
               "query": "listign service response time has gone up",
               "identifier": "listing-service-runbook.md",
               "metrics": {
-                "precision": 0.3333333333333333,
+                "precision": 0.16666666666666666,
                 "recall": 1.0,
-                "reciprocal_rank": 1.0
+                "reciprocal_rank": 0.5
               }
             },
             {
@@ -1611,7 +1611,7 @@
               "query": "listing-service might be a cache/redis issue",
               "identifier": "listing-service-runbook.md",
               "metrics": {
-                "precision": 0.3333333333333333,
+                "precision": 0.16666666666666666,
                 "recall": 1.0,
                 "reciprocal_rank": 1.0
               }
@@ -1620,7 +1620,7 @@
               "query": "listing service think its a cache failover",
               "identifier": "listing-service-runbook.md",
               "metrics": {
-                "precision": 0.3333333333333333,
+                "precision": 0.16666666666666666,
                 "recall": 1.0,
                 "reciprocal_rank": 1.0
               }
@@ -1629,16 +1629,16 @@
               "query": "listing svc possibly a redis problem",
               "identifier": "listing-service-runbook.md",
               "metrics": {
-                "precision": 0.3333333333333333,
-                "recall": 1.0,
-                "reciprocal_rank": 1.0
+                "precision": 0.0,
+                "recall": 0.0,
+                "reciprocal_rank": 0.0
               }
             },
             {
               "query": "listign service maybe cache nodes failed",
               "identifier": "listing-service-runbook.md",
               "metrics": {
-                "precision": 0.3333333333333333,
+                "precision": 0.16666666666666666,
                 "recall": 1.0,
                 "reciprocal_rank": 1.0
               }
@@ -1667,7 +1667,7 @@
               "metrics": {
                 "precision": 0.3333333333333333,
                 "recall": 1.0,
-                "reciprocal_rank": 0.5
+                "reciprocal_rank": 1.0
               }
             },
             {
@@ -1685,7 +1685,7 @@
               "metrics": {
                 "precision": 0.3333333333333333,
                 "recall": 1.0,
-                "reciprocal_rank": 0.5
+                "reciprocal_rank": 0.3333333333333333
               }
             },
             {
@@ -1703,7 +1703,7 @@
               "metrics": {
                 "precision": 0.3333333333333333,
                 "recall": 1.0,
-                "reciprocal_rank": 0.5
+                "reciprocal_rank": 1.0
               }
             },
             {
@@ -1721,25 +1721,25 @@
               "metrics": {
                 "precision": 0.16666666666666666,
                 "recall": 1.0,
-                "reciprocal_rank": 0.2
+                "reciprocal_rank": 0.5
               }
             },
             {
               "query": "payment service think its a pool problem",
               "identifier": "payment-service-runbook.md",
               "metrics": {
-                "precision": 0.16666666666666666,
+                "precision": 0.3333333333333333,
                 "recall": 1.0,
-                "reciprocal_rank": 0.2
+                "reciprocal_rank": 0.3333333333333333
               }
             },
             {
               "query": "payment svc possibly a db connection issue",
               "identifier": "payment-service-runbook.md",
               "metrics": {
-                "precision": 0.3333333333333333,
+                "precision": 0.16666666666666666,
                 "recall": 1.0,
-                "reciprocal_rank": 0.2
+                "reciprocal_rank": 0.3333333333333333
               }
             },
             {
@@ -1748,130 +1748,130 @@
               "metrics": {
                 "precision": 0.16666666666666666,
                 "recall": 1.0,
-                "reciprocal_rank": 0.2
+                "reciprocal_rank": 0.5
               }
             }
           ],
           "summary_metrics": {
-            "precision": 0.2638888888888889,
-            "recall": 1.0,
-            "reciprocal_rank": 0.6527777777777778
+            "precision": 0.2037037037037037,
+            "recall": 0.7777777777777778,
+            "reciprocal_rank": 0.5597222222222222
           }
         }
       ],
       "aggregate_metrics": {
         "precision": {
-          "mean": 0.2638888888888889,
+          "mean": 0.2037037037037037,
           "std": 0.0,
-          "min": 0.2638888888888889,
-          "max": 0.2638888888888889,
+          "min": 0.2037037037037037,
+          "max": 0.2037037037037037,
           "n": 1
         },
         "recall": {
-          "mean": 1.0,
+          "mean": 0.7777777777777778,
           "std": 0.0,
-          "min": 1.0,
-          "max": 1.0,
+          "min": 0.7777777777777778,
+          "max": 0.7777777777777778,
           "n": 1
         },
         "reciprocal_rank": {
-          "mean": 0.6527777777777778,
+          "mean": 0.5597222222222222,
           "std": 0.0,
-          "min": 0.6527777777777778,
-          "max": 0.6527777777777778,
+          "min": 0.5597222222222222,
+          "max": 0.5597222222222222,
           "n": 1
         }
       },
       "per_query_aggregate": {
         "auth-service response time has gone up": {
           "precision": {
-            "mean": 0.16666666666666666,
+            "mean": 0.0,
             "std": 0.0,
-            "min": 0.16666666666666666,
-            "max": 0.16666666666666666,
+            "min": 0.0,
+            "max": 0.0,
             "n": 1
           },
           "recall": {
-            "mean": 1.0,
+            "mean": 0.0,
             "std": 0.0,
-            "min": 1.0,
-            "max": 1.0,
+            "min": 0.0,
+            "max": 0.0,
             "n": 1
           },
           "reciprocal_rank": {
-            "mean": 0.3333333333333333,
+            "mean": 0.0,
             "std": 0.0,
-            "min": 0.3333333333333333,
-            "max": 0.3333333333333333,
+            "min": 0.0,
+            "max": 0.0,
             "n": 1
           }
         },
         "auth-service latencyy has increased": {
           "precision": {
-            "mean": 0.16666666666666666,
+            "mean": 0.0,
             "std": 0.0,
-            "min": 0.16666666666666666,
-            "max": 0.16666666666666666,
+            "min": 0.0,
+            "max": 0.0,
             "n": 1
           },
           "recall": {
-            "mean": 1.0,
+            "mean": 0.0,
             "std": 0.0,
-            "min": 1.0,
-            "max": 1.0,
+            "min": 0.0,
+            "max": 0.0,
             "n": 1
           },
           "reciprocal_rank": {
-            "mean": 0.3333333333333333,
+            "mean": 0.0,
             "std": 0.0,
-            "min": 0.3333333333333333,
-            "max": 0.3333333333333333,
+            "min": 0.0,
+            "max": 0.0,
             "n": 1
           }
         },
         "auth service feels slow": {
           "precision": {
-            "mean": 0.16666666666666666,
+            "mean": 0.0,
             "std": 0.0,
-            "min": 0.16666666666666666,
-            "max": 0.16666666666666666,
+            "min": 0.0,
+            "max": 0.0,
             "n": 1
           },
           "recall": {
-            "mean": 1.0,
+            "mean": 0.0,
             "std": 0.0,
-            "min": 1.0,
-            "max": 1.0,
+            "min": 0.0,
+            "max": 0.0,
             "n": 1
           },
           "reciprocal_rank": {
-            "mean": 0.3333333333333333,
+            "mean": 0.0,
             "std": 0.0,
-            "min": 0.3333333333333333,
-            "max": 0.3333333333333333,
+            "min": 0.0,
+            "max": 0.0,
             "n": 1
           }
         },
         "auth service resposne time is high": {
           "precision": {
-            "mean": 0.16666666666666666,
+            "mean": 0.0,
             "std": 0.0,
-            "min": 0.16666666666666666,
-            "max": 0.16666666666666666,
+            "min": 0.0,
+            "max": 0.0,
             "n": 1
           },
           "recall": {
-            "mean": 1.0,
+            "mean": 0.0,
             "std": 0.0,
-            "min": 1.0,
-            "max": 1.0,
+            "min": 0.0,
+            "max": 0.0,
             "n": 1
           },
           "reciprocal_rank": {
-            "mean": 0.3333333333333333,
+            "mean": 0.0,
             "std": 0.0,
-            "min": 0.3333333333333333,
-            "max": 0.3333333333333333,
+            "min": 0.0,
+            "max": 0.0,
             "n": 1
           }
         },
@@ -1891,10 +1891,10 @@
             "n": 1
           },
           "reciprocal_rank": {
-            "mean": 0.3333333333333333,
+            "mean": 0.25,
             "std": 0.0,
-            "min": 0.3333333333333333,
-            "max": 0.3333333333333333,
+            "min": 0.25,
+            "max": 0.25,
             "n": 1
           }
         },
@@ -1914,14 +1914,83 @@
             "n": 1
           },
           "reciprocal_rank": {
-            "mean": 0.3333333333333333,
+            "mean": 0.25,
             "std": 0.0,
-            "min": 0.3333333333333333,
-            "max": 0.3333333333333333,
+            "min": 0.25,
+            "max": 0.25,
             "n": 1
           }
         },
         "athu service response time has gone up": {
+          "precision": {
+            "mean": 0.0,
+            "std": 0.0,
+            "min": 0.0,
+            "max": 0.0,
+            "n": 1
+          },
+          "recall": {
+            "mean": 0.0,
+            "std": 0.0,
+            "min": 0.0,
+            "max": 0.0,
+            "n": 1
+          },
+          "reciprocal_rank": {
+            "mean": 0.0,
+            "std": 0.0,
+            "min": 0.0,
+            "max": 0.0,
+            "n": 1
+          }
+        },
+        "athu service latencyy has increased": {
+          "precision": {
+            "mean": 0.0,
+            "std": 0.0,
+            "min": 0.0,
+            "max": 0.0,
+            "n": 1
+          },
+          "recall": {
+            "mean": 0.0,
+            "std": 0.0,
+            "min": 0.0,
+            "max": 0.0,
+            "n": 1
+          },
+          "reciprocal_rank": {
+            "mean": 0.0,
+            "std": 0.0,
+            "min": 0.0,
+            "max": 0.0,
+            "n": 1
+          }
+        },
+        "auth-service might be a cache or redis issue": {
+          "precision": {
+            "mean": 0.0,
+            "std": 0.0,
+            "min": 0.0,
+            "max": 0.0,
+            "n": 1
+          },
+          "recall": {
+            "mean": 0.0,
+            "std": 0.0,
+            "min": 0.0,
+            "max": 0.0,
+            "n": 1
+          },
+          "reciprocal_rank": {
+            "mean": 0.0,
+            "std": 0.0,
+            "min": 0.0,
+            "max": 0.0,
+            "n": 1
+          }
+        },
+        "auth service think session store is having problems": {
           "precision": {
             "mean": 0.16666666666666666,
             "std": 0.0,
@@ -1937,14 +2006,14 @@
             "n": 1
           },
           "reciprocal_rank": {
-            "mean": 0.16666666666666666,
+            "mean": 0.25,
             "std": 0.0,
-            "min": 0.16666666666666666,
-            "max": 0.16666666666666666,
+            "min": 0.25,
+            "max": 0.25,
             "n": 1
           }
         },
-        "athu service latencyy has increased": {
+        "auth svc maybe the cache failed over": {
           "precision": {
             "mean": 0.16666666666666666,
             "std": 0.0,
@@ -1967,75 +2036,6 @@
             "n": 1
           }
         },
-        "auth-service might be a cache or redis issue": {
-          "precision": {
-            "mean": 0.16666666666666666,
-            "std": 0.0,
-            "min": 0.16666666666666666,
-            "max": 0.16666666666666666,
-            "n": 1
-          },
-          "recall": {
-            "mean": 1.0,
-            "std": 0.0,
-            "min": 1.0,
-            "max": 1.0,
-            "n": 1
-          },
-          "reciprocal_rank": {
-            "mean": 1.0,
-            "std": 0.0,
-            "min": 1.0,
-            "max": 1.0,
-            "n": 1
-          }
-        },
-        "auth service think session store is having problems": {
-          "precision": {
-            "mean": 0.16666666666666666,
-            "std": 0.0,
-            "min": 0.16666666666666666,
-            "max": 0.16666666666666666,
-            "n": 1
-          },
-          "recall": {
-            "mean": 1.0,
-            "std": 0.0,
-            "min": 1.0,
-            "max": 1.0,
-            "n": 1
-          },
-          "reciprocal_rank": {
-            "mean": 0.5,
-            "std": 0.0,
-            "min": 0.5,
-            "max": 0.5,
-            "n": 1
-          }
-        },
-        "auth svc maybe the cache failed over": {
-          "precision": {
-            "mean": 0.16666666666666666,
-            "std": 0.0,
-            "min": 0.16666666666666666,
-            "max": 0.16666666666666666,
-            "n": 1
-          },
-          "recall": {
-            "mean": 1.0,
-            "std": 0.0,
-            "min": 1.0,
-            "max": 1.0,
-            "n": 1
-          },
-          "reciprocal_rank": {
-            "mean": 0.5,
-            "std": 0.0,
-            "min": 0.5,
-            "max": 0.5,
-            "n": 1
-          }
-        },
         "athu service possibly a redis failover": {
           "precision": {
             "mean": 0.16666666666666666,
@@ -2052,10 +2052,10 @@
             "n": 1
           },
           "reciprocal_rank": {
-            "mean": 0.3333333333333333,
+            "mean": 0.2,
             "std": 0.0,
-            "min": 0.3333333333333333,
-            "max": 0.3333333333333333,
+            "min": 0.2,
+            "max": 0.2,
             "n": 1
           }
         },
@@ -2199,10 +2199,10 @@
         },
         "listign service response time has gone up": {
           "precision": {
-            "mean": 0.3333333333333333,
+            "mean": 0.16666666666666666,
             "std": 0.0,
-            "min": 0.3333333333333333,
-            "max": 0.3333333333333333,
+            "min": 0.16666666666666666,
+            "max": 0.16666666666666666,
             "n": 1
           },
           "recall": {
@@ -2213,10 +2213,10 @@
             "n": 1
           },
           "reciprocal_rank": {
-            "mean": 1.0,
+            "mean": 0.5,
             "std": 0.0,
-            "min": 1.0,
-            "max": 1.0,
+            "min": 0.5,
+            "max": 0.5,
             "n": 1
           }
         },
@@ -2245,10 +2245,10 @@
         },
         "listing-service might be a cache/redis issue": {
           "precision": {
-            "mean": 0.3333333333333333,
+            "mean": 0.16666666666666666,
             "std": 0.0,
-            "min": 0.3333333333333333,
-            "max": 0.3333333333333333,
+            "min": 0.16666666666666666,
+            "max": 0.16666666666666666,
             "n": 1
           },
           "recall": {
@@ -2268,10 +2268,10 @@
         },
         "listing service think its a cache failover": {
           "precision": {
-            "mean": 0.3333333333333333,
+            "mean": 0.16666666666666666,
             "std": 0.0,
-            "min": 0.3333333333333333,
-            "max": 0.3333333333333333,
+            "min": 0.16666666666666666,
+            "max": 0.16666666666666666,
             "n": 1
           },
           "recall": {
@@ -2291,33 +2291,33 @@
         },
         "listing svc possibly a redis problem": {
           "precision": {
-            "mean": 0.3333333333333333,
+            "mean": 0.0,
             "std": 0.0,
-            "min": 0.3333333333333333,
-            "max": 0.3333333333333333,
+            "min": 0.0,
+            "max": 0.0,
             "n": 1
           },
           "recall": {
-            "mean": 1.0,
+            "mean": 0.0,
             "std": 0.0,
-            "min": 1.0,
-            "max": 1.0,
+            "min": 0.0,
+            "max": 0.0,
             "n": 1
           },
           "reciprocal_rank": {
-            "mean": 1.0,
+            "mean": 0.0,
             "std": 0.0,
-            "min": 1.0,
-            "max": 1.0,
+            "min": 0.0,
+            "max": 0.0,
             "n": 1
           }
         },
         "listign service maybe cache nodes failed": {
           "precision": {
-            "mean": 0.3333333333333333,
+            "mean": 0.16666666666666666,
             "std": 0.0,
-            "min": 0.3333333333333333,
-            "max": 0.3333333333333333,
+            "min": 0.16666666666666666,
+            "max": 0.16666666666666666,
             "n": 1
           },
           "recall": {
@@ -2397,10 +2397,10 @@
             "n": 1
           },
           "reciprocal_rank": {
-            "mean": 0.5,
+            "mean": 1.0,
             "std": 0.0,
-            "min": 0.5,
-            "max": 0.5,
+            "min": 1.0,
+            "max": 1.0,
             "n": 1
           }
         },
@@ -2443,10 +2443,10 @@
             "n": 1
           },
           "reciprocal_rank": {
-            "mean": 0.5,
+            "mean": 0.3333333333333333,
             "std": 0.0,
-            "min": 0.5,
-            "max": 0.5,
+            "min": 0.3333333333333333,
+            "max": 0.3333333333333333,
             "n": 1
           }
         },
@@ -2489,10 +2489,10 @@
             "n": 1
           },
           "reciprocal_rank": {
-            "mean": 0.5,
+            "mean": 1.0,
             "std": 0.0,
-            "min": 0.5,
-            "max": 0.5,
+            "min": 1.0,
+            "max": 1.0,
             "n": 1
           }
         },
@@ -2535,37 +2535,14 @@
             "n": 1
           },
           "reciprocal_rank": {
-            "mean": 0.2,
+            "mean": 0.5,
             "std": 0.0,
-            "min": 0.2,
-            "max": 0.2,
+            "min": 0.5,
+            "max": 0.5,
             "n": 1
           }
         },
         "payment service think its a pool problem": {
-          "precision": {
-            "mean": 0.16666666666666666,
-            "std": 0.0,
-            "min": 0.16666666666666666,
-            "max": 0.16666666666666666,
-            "n": 1
-          },
-          "recall": {
-            "mean": 1.0,
-            "std": 0.0,
-            "min": 1.0,
-            "max": 1.0,
-            "n": 1
-          },
-          "reciprocal_rank": {
-            "mean": 0.2,
-            "std": 0.0,
-            "min": 0.2,
-            "max": 0.2,
-            "n": 1
-          }
-        },
-        "payment svc possibly a db connection issue": {
           "precision": {
             "mean": 0.3333333333333333,
             "std": 0.0,
@@ -2581,10 +2558,33 @@
             "n": 1
           },
           "reciprocal_rank": {
-            "mean": 0.2,
+            "mean": 0.3333333333333333,
             "std": 0.0,
-            "min": 0.2,
-            "max": 0.2,
+            "min": 0.3333333333333333,
+            "max": 0.3333333333333333,
+            "n": 1
+          }
+        },
+        "payment svc possibly a db connection issue": {
+          "precision": {
+            "mean": 0.16666666666666666,
+            "std": 0.0,
+            "min": 0.16666666666666666,
+            "max": 0.16666666666666666,
+            "n": 1
+          },
+          "recall": {
+            "mean": 1.0,
+            "std": 0.0,
+            "min": 1.0,
+            "max": 1.0,
+            "n": 1
+          },
+          "reciprocal_rank": {
+            "mean": 0.3333333333333333,
+            "std": 0.0,
+            "min": 0.3333333333333333,
+            "max": 0.3333333333333333,
             "n": 1
           }
         },
@@ -2604,10 +2604,10 @@
             "n": 1
           },
           "reciprocal_rank": {
-            "mean": 0.2,
+            "mean": 0.5,
             "std": 0.0,
-            "min": 0.2,
-            "max": 0.2,
+            "min": 0.5,
+            "max": 0.5,
             "n": 1
           }
         }
@@ -2616,28 +2616,25 @@
   },
   "summary": {
     "precision": {
-      "mean": 0.18398268398268397,
-      "std": 0.11579580844238316,
-      "min": 0.0,
-      "max": 0.3333333333333333,
-      "n": 77
+      "mean": 0.12987012987012986,
+      "std": 0.0,
+      "min": 0.12987012987012986,
+      "max": 0.12987012987012986,
+      "n": 1
     },
     "recall": {
-      "mean": 0.7987012987012987,
-      "std": 0.396901475063276,
-      "min": 0.0,
-      "max": 1.0,
-      "n": 77
+      "mean": 0.5454545454545454,
+      "std": 0.0,
+      "min": 0.5454545454545454,
+      "max": 0.5454545454545454,
+      "n": 1
     },
     "reciprocal_rank": {
-      "mean": 0.4484848484848485,
-      "std": 0.3699009443687465,
-      "min": 0.0,
-      "max": 1.0,
-      "n": 77
+      "mean": 0.3696969696969697,
+      "std": 0.0,
+      "min": 0.3696969696969697,
+      "max": 0.3696969696969697,
+      "n": 1
     }
-  },
-  "baseline_id": "baseline__rag_retrieval__hype__b22f2e97",
-  "promoted_at": "2026-08-02T06:55:22Z",
-  "superseded_baseline_id": "baseline__rag_retrieval__hype__dca2f8ae"
+  }
 }

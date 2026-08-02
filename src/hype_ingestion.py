@@ -71,17 +71,58 @@ LLM_TEMPERATURE = 0
 
 QUESTIONS_PER_CHUNK = 3
 
+# doc_type-specific guidance slotted into QUESTION_GENERATION_PROMPT below --
+# runbooks and postmortems are searched under different intents (live triage
+# steps vs. "has this happened before"), so the questions generated for each
+# should read differently even when both mention the same service/symptom.
+RUNBOOK_QUESTION_GUIDANCE = """\
+This chunk is from a RUNBOOK -- a prescriptive triage document engineers \
+follow live, during an active incident. Bias your questions toward what an \
+engineer asks while actively triaging: symptom identification ("why is X \
+happening"), what to check next, mitigation/fix steps, and escalation \
+criteria. Phrase them as an engineer would type them under time pressure, \
+not as the runbook itself is written.\
+"""
+
+POSTMORTEM_QUESTION_GUIDANCE = """\
+This chunk is from a POSTMORTEM -- a retrospective writeup of a past \
+incident, referenced during triage to check whether the current symptoms \
+match something that has happened before. Bias your questions toward that \
+use case: "has this happened before", "what caused the outage where X \
+happened", "what was the root cause of an incident like this", "what fixed \
+it last time" -- not step-by-step triage instructions, since a postmortem \
+doesn't give live triage steps.\
+"""
+
+DOC_TYPE_GUIDANCE = {
+    "runbook": RUNBOOK_QUESTION_GUIDANCE,
+    "postmortem": POSTMORTEM_QUESTION_GUIDANCE,
+}
+
 QUESTION_GENERATION_PROMPT = """\
 You are indexing a runbook/postmortem chunk for a semantic search system \
 used by on-call engineers during incident triage.
 
-This chunk is from the document "{source}" -- infer which service that \
-document is primarily about from its filename and content. Even where the \
-chunk mentions or cross-checks a *different* service (e.g. a step telling \
-the on-call engineer to also check another service's dashboard), the \
-questions you generate must stay anchored to what THIS document is \
-fundamentally about. A cross-check step that mentions another service is \
-not itself a question about that other service.
+This chunk is from the document "{source}", which is about the \
+**{service}** service. Even where the chunk mentions or cross-checks a \
+*different* service (e.g. a step telling the on-call engineer to also \
+check another service's dashboard), the questions you generate must stay \
+anchored to what THIS document is fundamentally about. A cross-check step \
+that mentions another service is not itself a question about that other \
+service.
+
+EVERY one of the {n} questions you generate MUST explicitly contain the \
+literal identifier "{service}" -- do not write a question that only says \
+"the service", "it", or leaves the service unnamed, even if the chunk's \
+own wording doesn't repeat the service name on every line. This matters \
+because these questions are matched against engineer queries by literal \
+text similarity, not by shared context -- a question missing the service \
+name will fail to match a query that includes it, even when the chunk is \
+the right answer.
+  Bad:  "Why is the error rate spiking on /login with 401 status code?"
+  Good: "Why is {service}'s error rate spiking on /login with 401 status code?"
+
+{doc_type_guidance}
 
 Chunk content:
 \"\"\"
@@ -92,11 +133,10 @@ Generate exactly {n} questions an on-call engineer might type into this \
 search system while actively triaging an incident, that this chunk would \
 help answer -- phrased the way an engineer would actually ask under time \
 pressure (symptom-focused, casual), not the way the chunk itself is \
-written. Cover different angles where the chunk supports it (symptom \
-description, mitigation/fix step, escalation) -- but every question must \
-be genuinely answerable from this specific chunk, not a generic incident \
-question, and must not be mistakable for a question about a different \
-service just because this chunk happens to mention one.
+written. Cover different angles where the chunk supports it -- but every \
+question must be genuinely answerable from this specific chunk, not a \
+generic incident question, and must not be mistakable for a question \
+about a different service just because this chunk happens to mention one.
 
 Return only the {n} questions, one per line. No numbering, no explanation.\
 """
@@ -129,16 +169,33 @@ def _load_unique_chunks(embeddings: HuggingFaceEmbeddings, source_vectorstore_di
         if content not in seen:
             seen[content] = Document(
                 page_content=content,
-                metadata={"source": meta.get("source", "unknown"), "section": meta.get("section", "unknown")},
+                metadata={
+                    "source": meta.get("source", "unknown"),
+                    "section": meta.get("section", "unknown"),
+                    "doc_type": meta["doc_type"],
+                    "service": meta["service"],
+                },
             )
     return list(seen.values())
 
 
-def _generate_questions(llm: ChatGroq, chunk_content: str, source: str) -> list[str]:
-    prompt = QUESTION_GENERATION_PROMPT.format(chunk_content=chunk_content, n=QUESTIONS_PER_CHUNK, source=source)
+def _generate_questions(llm: ChatGroq, chunk_content: str, source: str, doc_type: str, service: str) -> list[str]:
+    prompt = QUESTION_GENERATION_PROMPT.format(
+        chunk_content=chunk_content,
+        n=QUESTIONS_PER_CHUNK,
+        source=source,
+        service=service,
+        doc_type_guidance=DOC_TYPE_GUIDANCE[doc_type],
+    )
     response = llm.bind(temperature=LLM_TEMPERATURE).invoke([HumanMessage(content=prompt)])
     lines = [line.strip() for line in response.content.strip().split("\n") if line.strip()]
-    return lines[:QUESTIONS_PER_CHUNK]
+    questions = lines[:QUESTIONS_PER_CHUNK]
+
+    # Prompting alone doesn't reliably get a weaker model (llama-3.1-8b-instant)
+    # to name the service in every question -- confirmed empirically (54% of
+    # questions omitted it before this fix). Backstop deterministically rather
+    # than just asking harder, so the property actually always holds.
+    return [q if service.lower() in q.lower() else f"{q} ({service})" for q in questions]
 
 
 def build_hype_vectorstore(
@@ -168,9 +225,11 @@ def build_hype_vectorstore(
 
     question_docs: list[Document] = []
     for i, chunk in enumerate(chunks, 1):
-        questions = _generate_questions(llm, chunk.page_content, chunk.metadata["source"])
+        questions = _generate_questions(
+            llm, chunk.page_content, chunk.metadata["source"], chunk.metadata["doc_type"], chunk.metadata["service"]
+        )
         print(f"  [{i}/{len(chunks)}] {chunk.metadata['source']} / {chunk.metadata['section'][:40]!r} "
-              f"-> {len(questions)} questions")
+              f"({chunk.metadata['doc_type']}, {chunk.metadata['service']}) -> {len(questions)} questions")
         for q in questions:
             question_docs.append(Document(
                 page_content=q,

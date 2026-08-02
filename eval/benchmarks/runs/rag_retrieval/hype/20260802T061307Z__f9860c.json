@@ -6,7 +6,7 @@
   "repeats": 1,
   "git_commit": "37e008a0f1ae7f87d952e32da0629b28de7082c9",
   "git_dirty": true,
-  "description": "doc_type-aware + service-name-guaranteed HyPE question prompt (fixes checkout-competition regression, beats prior baseline on pooled recall/RR)",
+  "description": "doc_type-aware + service-name-guaranteed HyPE question prompt",
   "pipeline_config": {
     "corpus": "latest_runbooks+postmorterms",
     "embedding_model": "all-MiniLM-L6-v2",
@@ -2617,27 +2617,24 @@
   "summary": {
     "precision": {
       "mean": 0.18398268398268397,
-      "std": 0.11579580844238316,
-      "min": 0.0,
-      "max": 0.3333333333333333,
-      "n": 77
+      "std": 0.0,
+      "min": 0.18398268398268397,
+      "max": 0.18398268398268397,
+      "n": 1
     },
     "recall": {
       "mean": 0.7987012987012987,
-      "std": 0.396901475063276,
-      "min": 0.0,
-      "max": 1.0,
-      "n": 77
+      "std": 0.0,
+      "min": 0.7987012987012987,
+      "max": 0.7987012987012987,
+      "n": 1
     },
     "reciprocal_rank": {
       "mean": 0.4484848484848485,
-      "std": 0.3699009443687465,
-      "min": 0.0,
-      "max": 1.0,
-      "n": 77
+      "std": 0.0,
+      "min": 0.4484848484848485,
+      "max": 0.4484848484848485,
+      "n": 1
     }
-  },
-  "baseline_id": "baseline__rag_retrieval__hype__b22f2e97",
-  "promoted_at": "2026-08-02T06:55:22Z",
-  "superseded_baseline_id": "baseline__rag_retrieval__hype__dca2f8ae"
+  }
 }
