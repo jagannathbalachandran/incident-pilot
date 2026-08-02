@@ -452,6 +452,12 @@ class TestHydeQueryExpansion(unittest.TestCase):
              patch("incident_pilot.MCPClient"):
             mock_model = MagicMock()
             mock_model.invoke.return_value = hyde_response
+            # _expand_query calls self.model.bind(temperature=...).invoke(...),
+            # not self.model.invoke(...) directly -- without this, .bind(...)
+            # returns an unconfigured child MagicMock whose .invoke() never
+            # reaches hyde_response (iterating its .content silently yields
+            # an empty list via MagicMock's default __iter__, not an error).
+            mock_model.bind.return_value = mock_model
             mock_groq_class.return_value = mock_model
             pilot = IncidentPilot()
         return pilot
