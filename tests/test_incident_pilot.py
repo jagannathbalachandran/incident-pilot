@@ -456,25 +456,23 @@ class TestHydeQueryExpansion(unittest.TestCase):
             pilot = IncidentPilot()
         return pilot
 
-    def test_expand_query_prepends_original_and_caps_at_six(self):
+    def test_expand_query_prepends_original_and_caps_at_four(self):
         pilot = self._make_pilot(AIMessage(
             content=(
-                "connection pool exhaustion\n"
-                "pool_acquire_timeout_ms\n"
-                "increase pgbouncer pool size\n"
-                "active_connections back under max\n"
-                "escalate to database on-call\n"
-                "an extra sixth line the LLM shouldn't produce but might"
+                "checkout-api connection pool exhaustion\n"
+                "checkout-api pool_acquire_timeout_ms\n"
+                "increase checkout-api pgbouncer pool size\n"
+                "an extra fourth line the LLM shouldn't produce but might"
             ),
             tool_calls=[],
         ))
         queries = pilot._expand_query("checkout is slow")
 
-        self.assertEqual(len(queries), 6)
+        self.assertEqual(len(queries), 4)
         self.assertEqual(queries[0], "checkout is slow")
-        self.assertEqual(queries[1], "connection pool exhaustion")
+        self.assertEqual(queries[1], "checkout-api connection pool exhaustion")
 
-    def test_expand_query_handles_fewer_than_five_lines(self):
+    def test_expand_query_handles_fewer_than_three_lines(self):
         pilot = self._make_pilot(AIMessage(content="pool exhaustion", tool_calls=[]))
         queries = pilot._expand_query("checkout is slow")
 

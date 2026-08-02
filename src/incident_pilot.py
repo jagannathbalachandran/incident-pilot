@@ -9,13 +9,15 @@ round trip to ``mcp_server/server.py`` (spawned once, over stdio) -- not a
 same-process function call.
 
 RAG retrieval uses HyDE query expansion (``_expand_query``): the engineer's
-raw symptom description is sent to the LLM, which generates 5 targeted
+raw symptom description is sent to the LLM, which generates 3 targeted
 search queries in the vocabulary runbooks/postmortems actually use (metric
 names, config params, known-issue titles) rather than the engineer's
-vocabulary. All 6 queries (5 expanded + the original) run against ChromaDB
-independently and the results are deduplicated by content -- the union
-covers multiple triage hypotheses, not just whichever one lexically matched
-the raw query.
+vocabulary -- each one required to explicitly name the service the incident
+is about, if identifiable, since a query missing the service name can
+retrieve a different service's runbook. All 4 queries (3 expanded + the
+original) run against ChromaDB independently and the results are
+deduplicated by content -- the union covers multiple triage hypotheses, not
+just whichever one lexically matched the raw query.
 
 Running this file directly fires a grounded triage query against the
 connection-pool-exhaustion runbook.
@@ -126,8 +128,8 @@ def _build_tools(mcp_client: MCPClient) -> list[StructuredTool]:
 SYSTEM_PROMPT_PATH = Path(__file__).parent.parent / "prompts" / "system_prompt.md"
 VECTORSTORE_DIR = Path(__file__).parent.parent / "synthetic-data" / "vectorstore"
 
-# Chunks retrieved per HyDE-expanded query. 6 queries (5 expanded + original)
-# x 3 chunks = up to 18 raw hits before dedup.
+# Chunks retrieved per HyDE-expanded query. 4 queries (3 expanded + original)
+# x 3 chunks = up to 12 raw hits before dedup.
 CHUNKS_PER_QUERY = 3
 
 # Hard cap on chunks actually sent to the LLM: the top-N by similarity
@@ -154,17 +156,26 @@ postmortem content for an on-call engineer.
 The engineer described this incident:
 "{query}"
 
-Generate exactly 5 search queries. Each query must be a short phrase that \
-would appear as a section heading, known issue title, mitigation step, or \
-diagnostic check inside a runbook or postmortem -- not a monitoring query or \
-a database command. Cover these angles:
+First, identify which service this incident is about, if the description \
+names or clearly implies one (e.g. "payment-service", "checkout-api", \
+"listing-service", "auth-service", "cart-api"). If a service is \
+identifiable, EVERY query you generate below must explicitly include that \
+service's name -- do not generate a query that only says "the service" or \
+drops the name partway through. This matters because these queries are \
+matched against runbook/postmortem text by literal similarity, not shared \
+context -- a query missing the service name can retrieve a different \
+service's runbook instead of the right one. If no service is identifiable \
+from the description, generate the queries without inventing one.
+
+Generate exactly 3 search queries. Each query must be a short phrase that \
+would appear as a section heading, known issue title, or diagnostic check \
+inside a runbook or postmortem -- not a monitoring query or a database \
+command. Cover these angles:
 1. The most likely root cause and its symptoms
 2. A second possible root cause to rule out
 3. The immediate mitigation or fix steps
-4. How to confirm the root cause is resolved
-5. Escalation path if the issue is not resolved within 15-30 minutes
 
-Return only the 5 queries, one per line. No numbering, no explanation.\
+Return only the 3 queries, one per line. No numbering, no explanation.\
 """
 
 TEST_QUERIES = [
@@ -272,7 +283,7 @@ class IncidentPilot:
 
     @track(name="hyde_expansion")
     def _expand_query(self, user_input: str) -> list[str]:
-        """HyDE: ask the LLM to generate 5 targeted search queries for the
+        """HyDE: ask the LLM to generate 3 targeted search queries for the
         engineer's symptom description.
 
         The LLM uses its knowledge of incident-response patterns to generate
@@ -296,9 +307,9 @@ class IncidentPilot:
             if line.strip()
         ]
         # Prepend original query so it is always searched even if the LLM
-        # produces fewer than 5 lines or misses the core symptom vocabulary.
+        # produces fewer than 3 lines or misses the core symptom vocabulary.
         all_queries = [user_input] + expanded
-        return all_queries[:6]  # cap to avoid runaway expansion
+        return all_queries[:4]  # cap to avoid runaway expansion
 
     @track(type="retriever", name="rag_retrieval")
     def _retrieve_with_queries(self, queries: list[str]) -> list[dict]:
