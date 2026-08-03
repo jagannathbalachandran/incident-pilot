@@ -44,6 +44,16 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # Copy the venv from builder
 COPY --from=builder /app/.venv /app/.venv
 
+# Phoenix's ThreadServer.run_in_thread() hardcodes a 5-second window for its
+# uvicorn+gRPC server thread to bind and signal ready (see
+# phoenix/server/thread_server.py) -- not configurable via any PHOENIX_* env
+# var. On this project's slower/virtualized Docker hosts that's consistently
+# too short (observed: RuntimeError: server took too long to start, every
+# attempt, even after DB migrations already completed), so raise it in the
+# installed package directly rather than relying on host performance.
+RUN sed -i 's/time_limit = time() + 5/time_limit = time() + 30/' \
+    /app/.venv/lib/python3.11/site-packages/phoenix/server/thread_server.py
+
 # Copy application source code
 COPY src/ ./src/
 COPY synthetic-data/ ./synthetic-data/
