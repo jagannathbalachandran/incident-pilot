@@ -236,10 +236,19 @@ class TestTriggerEndpoint(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         _validate_trigger_response(response.json(), "pool", "payment-service")
 
-    def test_trigger_pool_on_unsupporting_service_rejected(self):
-        """auth-service has no db pool -- pool cannot target it."""
+    def test_trigger_pool_on_auth_service(self):
+        """auth-service now declares a db pool, so pool can target it -- each of
+        the four core services supports both pool and cache incidents."""
         response = client.post("/api/incidents/pool/trigger",
                                json={"auto_resolve": True, "service": "auth-service"})
+        self.assertEqual(response.status_code, 200)
+        _validate_trigger_response(response.json(), "pool", "auth-service")
+
+    def test_trigger_pool_on_unsupporting_service_rejected(self):
+        """An internal service with no db pool (inventory-svc) still can't host a
+        pool incident -- the capability gate is intact, just widened for the core 4."""
+        response = client.post("/api/incidents/pool/trigger",
+                               json={"auto_resolve": True, "service": "inventory-svc"})
         self.assertEqual(response.status_code, 400)
         data = response.json()
         self.assertIn("does not support", data["error"])

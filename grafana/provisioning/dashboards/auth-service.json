@@ -107,8 +107,45 @@
         "wrapLogMessage": true,
         "prettifyLogs": true
       }
+    },
+    {
+      "title": "Connections vs Max",
+      "type": "timeseries",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 16},
+      "targets": [
+        {
+          "expr": "svc_active_connections{service=\"auth-service\"}",
+          "legendFormat": "active connections",
+          "refId": "A"
+        },
+        {
+          "expr": "svc_max_connections{service=\"auth-service\"}",
+          "legendFormat": "max connections",
+          "refId": "B"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "min": 0,
+          "max": 200,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {"color": "green", "value": null},
+              {"color": "orange", "value": 150},
+              {"color": "red", "value": 190}
+            ]
+          }
+        }
+      },
+      "options": {
+        "legend": {"show": true, "placement": "bottom"},
+        "tooltip": {"mode": "multi"}
+      }
     }
   ],
   "schemaVersion": 39,
-  "refresh": "15s"
+  "refresh": "5s",
+  "time": {"from": "now-5m", "to": "now"}
 }

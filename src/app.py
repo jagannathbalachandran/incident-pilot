@@ -10,8 +10,8 @@ chunks were retrieved, what live data (including any reconstructed user
 journey) was returned, and the full prompt sent to the LLM.
 
 Tab 2: **Incident Control** lets you trigger/resolve scenarios directly from the
-Gradio UI without using curl — pool exhaustion, cache failover, fraud outage,
-or a random incident, optionally targeting a specific service.
+Gradio UI without using curl — pool exhaustion or cache failover, optionally
+targeting a specific service.
 
 Usage:
     python src/app.py
@@ -35,27 +35,35 @@ pilot = IncidentPilot()
 # Incident-generator API base URL (Docker host port — override via env var)
 _FLASK_API = os.getenv("FLASK_API_URL", "http://localhost:5001")
 
+# The four services the UI exposes. The generator's topology still declares a
+# couple of internal-only dependencies (inventory-svc, fraud-scoring-svc), but
+# those are hidden here -- both dropdowns and the capability hint are filtered
+# to this allowlist so they never surface even when /api/services returns them.
+_ALLOWED_SERVICES = {
+    "auth-service",
+    "listing-service",
+    "checkout-api",
+    "payment-service",
+}
+
 # Static fallback if the generator isn't reachable yet when the UI starts.
-# Matches flask-generator/topology.py's SERVICES catalog (including the
-# non-user-facing services -- they're still valid incident targets).
+# Mirrors flask-generator/topology.py: all four services now declare both a db
+# pool and a cache, so each supports both pool-exhaustion and cache-failover.
 _FALLBACK_SERVICE_INFO = [
-    {"name": "auth-service", "uses_db_pool": False, "uses_cache": True},
+    {"name": "auth-service", "uses_db_pool": True, "uses_cache": True},
     {"name": "listing-service", "uses_db_pool": True, "uses_cache": True},
     {"name": "checkout-api", "uses_db_pool": True, "uses_cache": True},
-    {"name": "payment-service", "uses_db_pool": True, "uses_cache": False},
-    {"name": "inventory-svc", "uses_db_pool": False, "uses_cache": False},
-    {"name": "fraud-scoring-svc", "uses_db_pool": False, "uses_cache": False},
+    {"name": "payment-service", "uses_db_pool": True, "uses_cache": True},
 ]
 
 
 def _fetch_service_info() -> list:
-    """Fetch every service's capability info (name, uses_db_pool, uses_cache)
-    from the generator. Falls back to a static list if unreachable.
+    """Fetch each allowed service's capability info (name, uses_db_pool,
+    uses_cache) from the generator. Falls back to a static list if unreachable.
 
-    Deliberately includes non-user-facing services (payment-service,
-    inventory-svc, fraud-scoring-svc) -- they're still valid incident
-    targets (e.g. fraud-scoring-svc is the default target for the fraud
-    kind), just not steps a simulated end-user hits directly.
+    Filtered to ``_ALLOWED_SERVICES`` so the generator's internal-only
+    dependencies (inventory-svc, fraud-scoring-svc) never appear in the UI even
+    though /api/services still returns them.
     """
     try:
         resp = requests.get(f"{_FLASK_API}/api/services", timeout=5)
@@ -67,6 +75,7 @@ def _fetch_service_info() -> list:
                 "uses_cache": s.get("uses_cache", False),
             }
             for s in data.get("services", [])
+            if s.get("name") in _ALLOWED_SERVICES
         ]
         if info:
             return info
@@ -94,7 +103,7 @@ def _service_capability_hint(service: str) -> str:
     cache_mark = "✅" if caps["uses_cache"] else "❌"
     return (
         f"**`{service}` supports:** {pool_mark} Pool Exhaustion&nbsp;&nbsp;|&nbsp;&nbsp;"
-        f"{cache_mark} Cache Failover&nbsp;&nbsp;|&nbsp;&nbsp;✅ Fraud Outage (no prerequisite)"
+        f"{cache_mark} Cache Failover"
     )
 
 
@@ -205,34 +214,6 @@ def _trigger(kind: str, service: str = "", auto_resolve: bool = True):
         f"| **Kind** | `{kind}` |\n"
         f"| **Service** | `{svc}` |\n"
         f"| **Status** | `{status}` |\n"
-        f"| **Phase** | `{phase}` |\n"
-        f"| **Request ID** | `{rid}` |\n"
-    )
-    return msg, _get_state_markdown()
-
-
-def _trigger_random_incident():
-    """Trigger a randomly selected incident on a randomly selected supporting service."""
-    logger.info("Triggering random incident")
-    try:
-        resp = requests.post(f"{_FLASK_API}/api/incidents/trigger-random", timeout=5)
-        data = resp.json()
-    except Exception as exc:
-        logger.warning("Random trigger failed: %s", exc)
-        msg = f"❌ **Trigger error:** `{exc}`"
-        return msg, _get_state_markdown()
-
-    kind = data.get("kind", "?")
-    service = data.get("service", "?")
-    rid = data.get("request_id", "-")
-    phase = data.get("phase", "?")
-
-    msg = (
-        f"🎲 **Random incident triggered!**\n\n"
-        f"| Field | Value |\n"
-        f"|---|---|\n"
-        f"| **Kind** | `{kind}` |\n"
-        f"| **Service** | `{service}` |\n"
         f"| **Phase** | `{phase}` |\n"
         f"| **Request ID** | `{rid}` |\n"
     )
@@ -489,8 +470,6 @@ with gr.Blocks(
         .incident-btn { min-width: 140px !important; }
         button.trigger-pool { background: #e74c3c !important; }
         button.trigger-cache { background: #f39c12 !important; }
-        button.trigger-fraud { background: #9b59b6 !important; }
-        button.trigger-random { background: #3498db !important; }
         button.resolve-btn { background: #2ecc71 !important; }
         .state-card { border-left: 4px solid #3498db; padding: 10px; }
     """,
@@ -595,16 +574,6 @@ with gr.Blocks(
                     elem_classes="incident-btn trigger-cache",
                     size="lg",
                 )
-                fraud_btn = gr.Button(
-                    "🟣 Fraud Outage",
-                    elem_classes="incident-btn trigger-fraud",
-                    size="lg",
-                )
-                random_btn = gr.Button(
-                    "🔵 Random",
-                    elem_classes="incident-btn trigger-random",
-                    size="lg",
-                )
 
             with gr.Row():
                 resolve_btn = gr.Button(
@@ -638,15 +607,6 @@ with gr.Blocks(
             cache_btn.click(
                 fn=lambda svc: _trigger("cache", svc, True),
                 inputs=[service_dd],
-                outputs=[status_output, state_output],
-            )
-            fraud_btn.click(
-                fn=lambda svc: _trigger("fraud", svc, True),
-                inputs=[service_dd],
-                outputs=[status_output, state_output],
-            )
-            random_btn.click(
-                fn=_trigger_random_incident,
                 outputs=[status_output, state_output],
             )
             resolve_btn.click(

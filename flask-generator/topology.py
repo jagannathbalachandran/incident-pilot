@@ -76,6 +76,7 @@ SERVICES: dict = {
             Endpoint("GET", "/validate-session", base_latency_ms=15.0, base_error_pct=0.02),
         ],
         uses_cache=True,  # session store in Redis
+        uses_db_pool=True,  # also backed by a Postgres pool -> can host pool incidents
         pods=("auth-service-6b81a", "auth-service-2fd90", "auth-service-c7e14"),
     ),
     "listing-service": _svc(
@@ -113,6 +114,7 @@ SERVICES: dict = {
         [Endpoint("POST", "/charge", base_latency_ms=150.0, base_error_pct=0.06)],
         user_facing=False,
         uses_db_pool=True,
+        uses_cache=True,  # also fronted by a cache -> can host cache incidents
         pods=("payment-service-3d8e1", "payment-service-90cc4"),
     ),
     "inventory-svc": _svc(
