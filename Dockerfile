@@ -64,9 +64,16 @@ ENV PATH="/app/.venv/bin:$PATH"
 ENV TOKENIZERS_PARALLELISM=false
 ENV PYTHONUNBUFFERED=1
 
-EXPOSE 7860
+EXPOSE 7860 6006
 
+# Gradio (7860) is always required. Phoenix (6006) is opt-in via
+# PHOENIX_TRACING -- only require it when that's actually set, otherwise a
+# normal PHOENIX_TRACING-off run would be reported unhealthy for a service
+# it never started.
 HEALTHCHECK --interval=30s --timeout=10s --retries=3 --start-period=15s \
-    CMD curl -f http://localhost:7860/ || exit 1
+    CMD sh -c 'curl -f http://localhost:7860/ >/dev/null 2>&1 || exit 1; \
+        if [ "$PHOENIX_TRACING" = "true" ]; then \
+            curl -f http://localhost:6006/ >/dev/null 2>&1 || exit 1; \
+        fi'
 
 CMD ["python", "src/app.py"]
