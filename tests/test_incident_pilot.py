@@ -809,6 +809,44 @@ class TestHydeQueryExpansion(unittest.TestCase):
             ["chunk 1", "chunk 4", "chunk 6", "chunk 2", "chunk 7", "chunk 3"],
         )
 
+    def test_retrieve_with_queries_drops_chunks_beyond_distance_cutoff(self):
+        """Chunks whose best distance exceeds MAX_RETRIEVAL_DISTANCE are
+        dropped -- so a query the corpus has no runbook for (every hit far
+        away) collapses to an empty result, signalling 'novel issue' rather
+        than returning the nearest-but-irrelevant runbook."""
+        from src.incident_pilot import MAX_RETRIEVAL_DISTANCE
+
+        pilot = self._make_pilot(AIMessage(content="rate limiting", tool_calls=[]))
+
+        near = Document(page_content="relevant", metadata={"source": "s.pdf", "section": "near"})
+        far = Document(page_content="irrelevant", metadata={"source": "s.pdf", "section": "far"})
+        mock_vectorstore = MagicMock()
+        mock_vectorstore.similarity_search_with_score.return_value = [
+            (near, MAX_RETRIEVAL_DISTANCE - 0.1),
+            (far, MAX_RETRIEVAL_DISTANCE + 0.1),
+        ]
+        pilot.vectorstore = mock_vectorstore
+
+        chunks = pilot._retrieve_with_queries(["one query"])
+
+        self.assertEqual([c["content"] for c in chunks], ["relevant"])
+
+    def test_retrieve_with_queries_empty_when_all_beyond_cutoff(self):
+        """A truly novel query (all hits beyond the cutoff) returns nothing --
+        the 'no relevant runbook' signal the agent falls back on."""
+        from src.incident_pilot import MAX_RETRIEVAL_DISTANCE
+
+        pilot = self._make_pilot(AIMessage(content="novel issue", tool_calls=[]))
+
+        far = Document(page_content="unrelated", metadata={"source": "s.pdf", "section": "far"})
+        mock_vectorstore = MagicMock()
+        mock_vectorstore.similarity_search_with_score.return_value = [
+            (far, MAX_RETRIEVAL_DISTANCE + 0.5),
+        ]
+        pilot.vectorstore = mock_vectorstore
+
+        self.assertEqual(pilot._retrieve_with_queries(["one query"]), [])
+
 
 class TestCitationEnforcement(unittest.TestCase):
     """Tests for the code-level citation backstop: prompting alone doesn't

@@ -144,6 +144,25 @@ CHUNKS_PER_QUERY = 3
 # it while still keeping the multi-angle HyDE search itself unrestricted.
 MAX_RETRIEVED_CHUNKS = 6
 
+# Maximum L2 distance for a chunk to count as a relevant match. Chroma's
+# default metric is L2 (lower = more similar) and the corpus is embedded with
+# all-MiniLM-L6-v2. Without a cutoff, similarity_search always returns the k
+# nearest chunks *regardless of how far away they are*, so a query about an
+# issue the corpus has no runbook for (e.g. API rate-limiting) still comes back
+# with the least-irrelevant runbook -- which the citation backstop then forces
+# the model to cite, producing a confidently misgrounded answer. Empirically
+# (measured against this corpus) matches fall in three bands: genuinely
+# relevant <=~0.77, tangentially related ~0.86-0.92 (e.g. a "429 rate limit"
+# query matching the generic error-rate-high triage -- 429s are errors), and
+# unrelated noise >=~1.03 (other services' runbooks, off-topic queries). The
+# cleanest gap is 0.92->1.03, so 1.0 drops the noise while still letting a
+# weakly-relevant runbook through -- the model then cites it alongside labelled
+# [Agent inference] guidance, degrading gracefully rather than either dumping
+# an irrelevant runbook or refusing. Lower this toward ~0.82 to also treat the
+# tangential band as "novel" (pure general-reasoning answers), at the cost of a
+# thinner margin above the 0.77 relevant band.
+MAX_RETRIEVAL_DISTANCE = 1.0
+
 # HyDE expansion should be deterministic for reproducible retrieval evals --
 # see _expand_query. Named here (not just inlined at the call site) so
 # eval/benchmark/registry.py can read the actual value into pipeline_config
@@ -369,11 +388,20 @@ class IncidentPilot:
 
         ranked = sorted(best_by_fingerprint.values(), key=lambda pair: pair[0])
         total_unique = len(ranked)
-        chunks = [chunk for _score, chunk in ranked[:MAX_RETRIEVED_CHUNKS]]
+        # Drop chunks beyond the relevance cutoff before capping: for a novel
+        # issue the corpus has no doc for, every "match" is far away, so this
+        # collapses to an empty result -- an honest "no relevant runbook"
+        # signal the agent can act on (fall back to general reasoning) instead
+        # of citing the nearest-but-irrelevant runbook. See MAX_RETRIEVAL_DISTANCE.
+        relevant = [pair for pair in ranked if pair[0] <= MAX_RETRIEVAL_DISTANCE]
+        dropped = total_unique - len(relevant)
+        chunks = [chunk for _score, chunk in relevant[:MAX_RETRIEVED_CHUNKS]]
 
-        logger.info("RAG retrieved %d unique chunk(s) across %d quer(y/ies), "
+        logger.info("RAG retrieved %d unique chunk(s) across %d quer(y/ies); "
+                     "%d beyond distance cutoff %.2f dropped; "
                      "ranked by similarity (top %d sent to LLM): %s",
-                     total_unique, len(queries), len(chunks),
+                     total_unique, len(queries), dropped, MAX_RETRIEVAL_DISTANCE,
+                     len(chunks),
                      [f"{c['source']} / {c['section']}" for c in chunks])
         return chunks
 
