@@ -55,9 +55,11 @@ ACTION_TAKEN_PHRASES = [
     "changes applied",
 ]
 
-# Stand-in HyDE response for tests that mock ChatGroq -- retrieve() now
-# always calls self.model.invoke() once (the plain, non-tool-bound call) to
-# expand the query before hitting the vector store.
+# Stand-in HyDE response for tests that mock ChatGroq -- retrieve()/
+# _expand_query() call self.model.invoke() once (the plain, non-tool-bound
+# call) to expand the query before hitting the vector store. Post RAG-as-tool,
+# this only happens when search_runbooks is actually invoked mid-loop, not on
+# every query() call.
 FAKE_HYDE_RESPONSE = AIMessage(
     content=(
         "connection pool exhaustion\n"
@@ -99,6 +101,9 @@ class TestGuardrailBehaviour(unittest.TestCase):
             )
 
     def _assert_no_tools_called(self) -> None:
+        # Generic over tool name -- covers query_metrics/query_logs (MCP) and
+        # search_runbooks (local RAG tool) alike, since all three are only
+        # ever bound via the same action_request guardrail branch.
         tool_calls = self.pilot.get_trace().get("tool_calls", [])
         self.assertEqual(
             tool_calls, [],
@@ -498,7 +503,194 @@ class TestAgentStructure(unittest.TestCase):
         trace = pilot.get_trace()
         self.assertEqual(trace["source"], "not_queried")
         self.assertEqual(trace["tool_calls"], [])
-        self.assertEqual(response, "The runbook says to check pool_acquire_timeout_ms.")
+
+    def test_telemetry_only_question_does_not_call_search_runbooks(self):
+        """A purely current-state question ('has there been an error in the
+        last hour?') should only trigger query_metrics/query_logs -- RAG
+        (search_runbooks) must not fire, and the vector store must not even
+        be touched."""
+        with patch("incident_pilot.ChatGroq") as mock_groq_class, \
+             patch("incident_pilot.MCPClient") as mock_mcp_class:
+            mock_model = MagicMock()
+            tool_call_response = AIMessage(
+                content="",
+                tool_calls=[{
+                    "name": "query_metrics",
+                    "args": {"service": "checkout-api", "timeframe": "1h"},
+                    "id": "call_1",
+                    "type": "tool_call",
+                }],
+            )
+            final_response = AIMessage(content="No errors in the last hour.", tool_calls=[])
+            mock_model.bind_tools.return_value.invoke.side_effect = [
+                tool_call_response, final_response,
+            ]
+            mock_groq_class.return_value = mock_model
+
+            mock_mcp_client = MagicMock()
+            mock_mcp_client.call_tool.return_value = {
+                "metrics": [{"name": "svc_error_rate_pct", "service": "checkout-api", "endpoint": "", "value": "0.05"}],
+                "source": "live",
+            }
+            mock_mcp_class.return_value = mock_mcp_client
+
+            pilot = IncidentPilot()
+            mock_vectorstore = MagicMock()
+            pilot.vectorstore = mock_vectorstore
+            pilot.query("Has there been an error in the last hour for checkout-api?")
+
+        mock_vectorstore.similarity_search_with_score.assert_not_called()
+        trace = pilot.get_trace()
+        self.assertEqual(trace["chunks"], [])
+        self.assertEqual(trace["queries"], [])
+        self.assertEqual([c["name"] for c in trace["tool_calls"]], ["query_metrics"])
+
+    def test_rag_only_question_does_not_call_telemetry(self):
+        """A purely procedural question ('how do I resolve it?') should only
+        trigger search_runbooks -- query_metrics/query_logs must not fire."""
+        with patch("incident_pilot.ChatGroq") as mock_groq_class, \
+             patch("incident_pilot.MCPClient") as mock_mcp_class:
+            mock_model = MagicMock()
+            mock_model.invoke.return_value = FAKE_HYDE_RESPONSE
+            tool_call_response = AIMessage(
+                content="",
+                tool_calls=[{
+                    "name": "search_runbooks",
+                    "args": {"query": "how do I resolve a connection pool exhaustion"},
+                    "id": "call_1",
+                    "type": "tool_call",
+                }],
+            )
+            final_response = AIMessage(
+                content="[Runbook: Immediate mitigation] Increase the pool size.", tool_calls=[],
+            )
+            mock_model.bind_tools.return_value.invoke.side_effect = [
+                tool_call_response, final_response,
+            ]
+            mock_groq_class.return_value = mock_model
+
+            mock_mcp_client = MagicMock()
+            mock_mcp_class.return_value = mock_mcp_client
+
+            pilot = IncidentPilot()
+            doc = Document(
+                page_content="Increase the PgBouncer pool size.",
+                metadata={"source": "checkout-api-runbook.md", "section": "Immediate mitigation"},
+            )
+            mock_vectorstore = MagicMock()
+            mock_vectorstore.similarity_search_with_score.return_value = [(doc, 0.1)]
+            pilot.vectorstore = mock_vectorstore
+            pilot.query("An error occurred, how do I resolve it?")
+
+        mock_mcp_client.call_tool.assert_not_called()
+        trace = pilot.get_trace()
+        self.assertEqual(trace["metrics"], [])
+        self.assertEqual(trace["log_analysis"], {})
+        self.assertEqual([c["name"] for c in trace["tool_calls"]], ["search_runbooks"])
+
+    def test_both_telemetry_and_rag_called_in_same_round(self):
+        """A question with both a current-state and a resolution angle
+        ('an error occurred, how do I resolve it, and what's the current
+        state?') can request both tools in a single round -- the existing
+        per-call dispatch loop already iterates a list of tool_calls, this
+        proves it handles a mixed MCP + local batch correctly."""
+        with patch("incident_pilot.ChatGroq") as mock_groq_class, \
+             patch("incident_pilot.MCPClient") as mock_mcp_class:
+            mock_model = MagicMock()
+            mock_model.invoke.return_value = FAKE_HYDE_RESPONSE
+            tool_call_response = AIMessage(
+                content="",
+                tool_calls=[
+                    {
+                        "name": "query_metrics",
+                        "args": {"service": "checkout-api", "timeframe": "15m"},
+                        "id": "call_1",
+                        "type": "tool_call",
+                    },
+                    {
+                        "name": "search_runbooks",
+                        "args": {"query": "how do I resolve a connection pool exhaustion"},
+                        "id": "call_2",
+                        "type": "tool_call",
+                    },
+                ],
+            )
+            final_response = AIMessage(
+                content="[Runbook: Immediate mitigation] Increase the pool size.", tool_calls=[],
+            )
+            mock_model.bind_tools.return_value.invoke.side_effect = [
+                tool_call_response, final_response,
+            ]
+            mock_groq_class.return_value = mock_model
+
+            mock_mcp_client = MagicMock()
+            mock_mcp_client.call_tool.return_value = {
+                "metrics": [{"name": "svc_error_rate_pct", "service": "checkout-api", "endpoint": "", "value": "6.2"}],
+                "source": "live",
+            }
+            mock_mcp_class.return_value = mock_mcp_client
+
+            pilot = IncidentPilot()
+            doc = Document(
+                page_content="Increase the PgBouncer pool size.",
+                metadata={"source": "checkout-api-runbook.md", "section": "Immediate mitigation"},
+            )
+            mock_vectorstore = MagicMock()
+            mock_vectorstore.similarity_search_with_score.return_value = [(doc, 0.1)]
+            pilot.vectorstore = mock_vectorstore
+            pilot.query("An error occurred, how do I resolve it, and what's the current state?")
+
+        mock_mcp_client.call_tool.assert_called_once_with(
+            "query_metrics", {"service": "checkout-api", "timeframe": "15m"},
+        )
+        mock_vectorstore.similarity_search_with_score.assert_called()
+        trace = pilot.get_trace()
+        self.assertEqual(
+            sorted(c["name"] for c in trace["tool_calls"]),
+            ["query_metrics", "search_runbooks"],
+        )
+        self.assertNotEqual(trace["chunks"], [])
+        self.assertNotEqual(trace["metrics"], [])
+
+    def test_search_runbooks_does_not_route_through_mcp_client(self):
+        """Regression check for the dispatch-by-name fix: search_runbooks is
+        a local call (self._tools_by_name[...].invoke(...)), never an MCP
+        round trip -- the mocked MCPClient must never see it."""
+        with patch("incident_pilot.ChatGroq") as mock_groq_class, \
+             patch("incident_pilot.MCPClient") as mock_mcp_class:
+            mock_model = MagicMock()
+            mock_model.invoke.return_value = FAKE_HYDE_RESPONSE
+            tool_call_response = AIMessage(
+                content="",
+                tool_calls=[{
+                    "name": "search_runbooks",
+                    "args": {"query": "how do I resolve a connection pool exhaustion"},
+                    "id": "call_1",
+                    "type": "tool_call",
+                }],
+            )
+            final_response = AIMessage(
+                content="[Runbook: Immediate mitigation] Increase the pool size.", tool_calls=[],
+            )
+            mock_model.bind_tools.return_value.invoke.side_effect = [
+                tool_call_response, final_response,
+            ]
+            mock_groq_class.return_value = mock_model
+
+            mock_mcp_client = MagicMock()
+            mock_mcp_class.return_value = mock_mcp_client
+
+            pilot = IncidentPilot()
+            doc = Document(
+                page_content="Increase the PgBouncer pool size.",
+                metadata={"source": "checkout-api-runbook.md", "section": "Immediate mitigation"},
+            )
+            mock_vectorstore = MagicMock()
+            mock_vectorstore.similarity_search_with_score.return_value = [(doc, 0.1)]
+            pilot.vectorstore = mock_vectorstore
+            pilot.query("An error occurred, how do I resolve it?")
+
+        mock_mcp_client.call_tool.assert_not_called()
 
 
 class TestHydeQueryExpansion(unittest.TestCase):
@@ -662,43 +854,65 @@ class TestCitationEnforcement(unittest.TestCase):
         pilot.vectorstore = mock_vectorstore
         return pilot
 
+    @staticmethod
+    def _search_runbooks_call(call_id="call_1"):
+        return AIMessage(content="", tool_calls=[{
+            "name": "search_runbooks",
+            "args": {"query": "What does the runbook say for pool exhaustion?"},
+            "id": call_id,
+            "type": "tool_call",
+        }])
+
     def test_query_triggers_citation_revision_when_missing(self):
         mock_model = MagicMock()
         mock_model.invoke.return_value = FAKE_HYDE_RESPONSE
         no_citation = AIMessage(content="Latency is high due to pool exhaustion.", tool_calls=[])
         revised = AIMessage(content="[Runbook: Immediate mitigation] Increase the pool size.", tool_calls=[])
-        mock_model.bind_tools.return_value.invoke.side_effect = [no_citation, revised]
+        mock_model.bind_tools.return_value.invoke.side_effect = [
+            self._search_runbooks_call(), no_citation, revised,
+        ]
 
         pilot = self._pilot_with_chunk(mock_model)
         response = pilot.query("What does the runbook say for pool exhaustion?")
 
         self.assertEqual(response, "[Runbook: Immediate mitigation] Increase the pool size.")
-        self.assertEqual(mock_model.bind_tools.return_value.invoke.call_count, 2)
+        # Round 1: model requests search_runbooks. Round 2: answers without a
+        # citation tag despite chunks being available. Round 3: citation-check
+        # revision produces the tagged answer.
+        self.assertEqual(mock_model.bind_tools.return_value.invoke.call_count, 3)
 
     def test_query_skips_citation_revision_when_already_present(self):
         mock_model = MagicMock()
         mock_model.invoke.return_value = FAKE_HYDE_RESPONSE
         cited = AIMessage(content="[Runbook: Immediate mitigation] Increase the pool size.", tool_calls=[])
-        mock_model.bind_tools.return_value.invoke.return_value = cited
+        mock_model.bind_tools.return_value.invoke.side_effect = [
+            self._search_runbooks_call(), cited,
+        ]
 
         pilot = self._pilot_with_chunk(mock_model)
         pilot.query("What does the runbook say for pool exhaustion?")
 
-        self.assertEqual(mock_model.bind_tools.return_value.invoke.call_count, 1)
+        # Round 1: model requests search_runbooks. Round 2: answers with the
+        # tag already present -- no third "citation revision" call needed.
+        self.assertEqual(mock_model.bind_tools.return_value.invoke.call_count, 2)
 
     def test_citation_check_skipped_for_action_request(self):
         """Guardrail refusals aren't triage answers -- no [Runbook] tag
-        should be demanded of them, even when RAG returned chunks."""
+        should be demanded of them. Action-request messages never bind
+        tools, so search_runbooks (and HyDE, which only runs inside it)
+        never fires here regardless of the mocked vectorstore having a
+        chunk available."""
         mock_model = MagicMock()
         refusal = AIMessage(content="I can't roll back production for you.", tool_calls=[])
-        mock_model.invoke.side_effect = [FAKE_HYDE_RESPONSE, refusal]
+        mock_model.invoke.return_value = refusal
 
         pilot = self._pilot_with_chunk(mock_model)
         response = pilot.query(DEPLOY_QUERY)
 
         self.assertEqual(response, "I can't roll back production for you.")
-        # HyDE + the refusal itself -- no third "citation revision" call.
-        self.assertEqual(mock_model.invoke.call_count, 2)
+        # Just the refusal itself -- no HyDE call (search_runbooks never
+        # bound/invoked) and no citation-revision call.
+        self.assertEqual(mock_model.invoke.call_count, 1)
 
 
 if __name__ == "__main__":

@@ -1,23 +1,24 @@
 """
 IncidentPilot agent — Week 1, Task 3 + Task 8 + Task 13 (MCP tool calling).
 
-Initialises ChatGroq with the triage-copilot system prompt, retrieves
-grounding chunks from the RAG vector store, and lets the model itself decide
-whether/which of two MCP-backed tools (``query_metrics``, ``query_logs``) to
-call before producing a cited triage summary. Tool calls are a real MCP
-round trip to ``mcp_server/server.py`` (spawned once, over stdio) -- not a
-same-process function call.
+Initialises ChatGroq with the triage-copilot system prompt and lets the
+model itself decide whether/which of three tools to call before producing a
+cited triage summary: ``search_runbooks`` (RAG, a local ChromaDB call) and
+two MCP-backed telemetry tools, ``query_metrics``/``query_logs``. Telemetry
+tool calls are a real MCP round trip to ``mcp_server/server.py`` (spawned
+once, over stdio) -- not a same-process function call; ``search_runbooks``
+is a same-process call, no MCP involved.
 
-RAG retrieval uses HyDE query expansion (``_expand_query``): the engineer's
-raw symptom description is sent to the LLM, which generates 3 targeted
-search queries in the vocabulary runbooks/postmortems actually use (metric
-names, config params, known-issue titles) rather than the engineer's
-vocabulary -- each one required to explicitly name the service the incident
-is about, if identifiable, since a query missing the service name can
-retrieve a different service's runbook. All 4 queries (3 expanded + the
-original) run against ChromaDB independently and the results are
-deduplicated by content -- the union covers multiple triage hypotheses, not
-just whichever one lexically matched the raw query.
+``search_runbooks`` uses HyDE query expansion (``_expand_query``) under the
+hood: the engineer's raw symptom description is sent to the LLM, which
+generates 3 targeted search queries in the vocabulary runbooks/postmortems
+actually use (metric names, config params, known-issue titles) rather than
+the engineer's vocabulary -- each one required to explicitly name the
+service the incident is about, if identifiable, since a query missing the
+service name can retrieve a different service's runbook. All 4 queries (3
+expanded + the original) run against ChromaDB independently and the results
+are deduplicated by content -- the union covers multiple triage hypotheses,
+not just whichever one lexically matched the raw query.
 
 Running this file directly fires a grounded triage query against the
 connection-pool-exhaustion runbook.
@@ -125,6 +126,8 @@ def _build_tools(mcp_client: MCPClient) -> list[StructuredTool]:
         StructuredTool.from_function(func=query_logs, name="query_logs"),
     ]
 
+
+
 SYSTEM_PROMPT_PATH = Path(__file__).parent.parent / "prompts" / "system_prompt.md"
 VECTORSTORE_DIR = Path(__file__).parent.parent / "synthetic-data" / "vectorstore"
 
@@ -224,9 +227,13 @@ class IncidentPilot:
 
         # Model is configurable via GROQ_MODEL so you can flip between Groq
         # models (each has its own separate per-day token budget) without a
-        # code change -- e.g. drop to llama-3.1-8b-instant when the 70b
-        # model's daily quota is exhausted.
-        model_name = os.environ.get("GROQ_MODEL", "llama-3.1-8b-instant")
+        # code change. Defaults to the stronger llama-3.3-70b-versatile --
+        # better instruction-following and tool-call/citation reliability,
+        # which now matters more with three tools (search_runbooks,
+        # query_metrics, query_logs) for the model to choose between. Drop
+        # to llama-3.1-8b-instant only if the 70b model's daily quota
+        # (100k TPD) is exhausted.
+        model_name = os.environ.get("GROQ_MODEL", "llama-3.3-70b-versatile")
         self._model_name = model_name
         logger.info("Initialising IncidentPilot with model=%s", model_name)
         self.system_prompt = SYSTEM_PROMPT_PATH.read_text()
@@ -240,7 +247,12 @@ class IncidentPilot:
         # model so the LLM itself decides whether/which to call per query.
         self.mcp_client = MCPClient()
         self.mcp_client.start()
-        self.tools = _build_tools(self.mcp_client)
+        # search_runbooks (RAG) is bound alongside the two MCP-backed
+        # telemetry tools so the LLM decides per turn whether retrieval is
+        # needed at all -- a purely current-state question shouldn't pay for
+        # HyDE + a vector search whose results it won't use.
+        self.tools = _build_tools(self.mcp_client) + [self._build_rag_tool()]
+        self._tools_by_name = {t.name: t for t in self.tools}
         self.model_with_tools = self.model.bind_tools(self.tools)
 
         # Observability: Phoenix's LangChainInstrumentor patches LangChain
@@ -372,6 +384,43 @@ class IncidentPilot:
         queries = self._expand_query(user_input)
         return self._retrieve_with_queries(queries)
 
+    def _build_rag_tool(self) -> StructuredTool:
+        """Wrap HyDE + retrieval (``_expand_query`` -> ``_retrieve_with_queries``)
+        as a bindable tool so the LLM decides per turn whether runbook/postmortem
+        grounding is needed -- same mechanism as the MCP telemetry tools, but a
+        local call (no MCP round trip)."""
+
+        def search_runbooks(query: str) -> dict:
+            """Search runbooks and postmortems for how to diagnose or resolve
+            a known incident pattern -- procedural/prescriptive guidance
+            (mitigation steps, escalation criteria, config parameters) and
+            historical context (has this happened before, what was the root
+            cause). Does NOT return live/current system state -- use
+            query_metrics or query_logs for that.
+
+            Call this when the question is about *how to fix* something,
+            *what to check* next, or *whether this has happened before*. Do
+            NOT call this for a purely live-telemetry question with no
+            resolution angle (e.g. "is there an error right now") --
+            query_metrics/query_logs alone answer those. If the question has
+            both angles, call this tool AND the relevant telemetry tool(s).
+
+            Args:
+                query: The engineer's question, in their own words --
+                    internally expanded into targeted runbook-vocabulary
+                    search queries before retrieval, so no need to
+                    pre-translate it yourself.
+            """
+            queries = self._expand_query(query)
+            chunks = self._retrieve_with_queries(queries)
+            return {
+                "queries": queries,
+                "chunks": chunks,
+                "context": self._format_context(chunks),
+            }
+
+        return StructuredTool.from_function(func=search_runbooks, name="search_runbooks")
+
     def _format_context(self, chunks: list[dict]) -> str:
         if not chunks:
             logger.debug("No RAG chunks to format — returning empty-context message")
@@ -398,6 +447,21 @@ class IncidentPilot:
         try:
             result = self.mcp_client.call_tool(name, args)
             logger.info("Tool call %s(%s) -> source=%s", name, args, result.get("source"))
+            return result
+        except Exception as exc:
+            logger.error("Tool call %s(%s) failed: %s", name, args, exc)
+            return {"error": str(exc)}
+
+    @track(type="tool", name="local_tool")
+    def _call_local_tool(self, name: str, args: dict) -> dict:
+        """Execute one non-MCP (locally bound) tool call -- currently just
+        ``search_runbooks`` -- and return its result dict, or an
+        ``{"error": ...}`` dict if it raised, mirroring ``_call_mcp_tool``'s
+        failure shape so a retrieval failure surfaces to the LLM as a tool
+        result instead of crashing ``query()``."""
+        try:
+            result = self._tools_by_name[name].invoke(args)
+            logger.info("Tool call %s(%s) -> local", name, args)
             return result
         except Exception as exc:
             logger.error("Tool call %s(%s) failed: %s", name, args, exc)
@@ -567,27 +631,32 @@ class IncidentPilot:
         """Return the trace data from the last query for the UI trace panel.
 
         Returns a dict with keys:
-          - ``queries``: original query + HyDE-expanded queries actually run
-            against the vector store this turn
+          - ``queries``: HyDE-expanded queries run against the vector store
+            this turn -- empty if the model never called ``search_runbooks``
           - ``chunks``: list of RAG chunk dicts ``{source, section, content}``
+            -- empty if the model never called ``search_runbooks`` this turn
           - ``metrics``: live metrics snapshot ``{name, service, endpoint, value}`` list
             (empty if the model never called ``query_metrics`` this turn)
           - ``log_analysis``: structured log analysis dict (empty if
             ``query_logs`` was never called this turn)
           - ``trace_summary``: distributed-trace summary dict (same)
           - ``trace_id``: sample failed trace's ID, if one was reconstructed
-          - ``tool_calls``: list of ``{name, args, result}`` for every MCP
-            tool call the model made this turn (empty list if none)
-          - ``augmented_input``: the initial prompt sent to the LLM
+          - ``tool_calls``: list of ``{name, args, result}`` for every tool
+            call the model made this turn -- MCP (``query_metrics``/
+            ``query_logs``) or local (``search_runbooks``) -- empty list if none
+          - ``augmented_input``: the initial prompt sent to the LLM (the raw
+            user message + scope hint -- no RAG block, since retrieval may
+            not have happened yet at that point)
           - ``source``: "live" | "unavailable" | "not_queried"
             ("not_queried" means the model answered without calling either
-            tool; "unavailable" means a tool was called but Prometheus/Loki
-            could not be reached)
+            telemetry tool; "unavailable" means a telemetry tool was called
+            but Prometheus/Loki could not be reached -- this reflects only
+            query_metrics/query_logs, not search_runbooks, which has no
+            live/unavailable concept)
           - ``timings``: list of ``{phase, duration_ms}`` for every phase run
-            this turn (hyde_expansion, rag_retrieval, initial_llm_call,
-            tool_round_N_execution/_llm_call, contradiction_check,
-            citation_check, ..., ending with a ``total`` entry) -- lets the
-            UI show where time actually went.
+            this turn (initial_llm_call, tool_round_N_execution/_llm_call,
+            contradiction_check, citation_check, ..., ending with a
+            ``total`` entry) -- lets the UI show where time actually went.
         """
         return (self._last_trace or {}).copy()
 
@@ -607,9 +676,10 @@ class IncidentPilot:
     @track(name="incident_triage")
     def query(self, user_input: str, service: str | None = None,
               history: list[tuple[str, str]] | None = None) -> str:
-        """Run a full triage query: RAG retrieval (always) + an MCP
-        tool-calling loop over ``query_metrics``/``query_logs`` that the
-        model itself decides whether/when to use + a cited answer.
+        """Run a full triage query: a bounded tool-calling loop over
+        ``search_runbooks`` (RAG, HyDE-expanded), ``query_metrics``, and
+        ``query_logs`` that the model itself decides whether/which to use,
+        plus a cited answer.
 
         Args:
             user_input: The engineer's incident description.
@@ -619,9 +689,8 @@ class IncidentPilot:
                      raw-text turns to give the model conversational memory.
                      Already windowed by the caller (the UI/session layer);
                      the pilot stays stateless and just injects it. Raw text
-                     only -- never the RAG-augmented form or tool rounds --
-                     so a few turns of memory don't blow the model's token
-                     ceiling.
+                     only -- never tool-round content -- so a few turns of
+                     memory don't blow the model's token ceiling.
 
         Returns the LLM's cited triage summary as a string.
         """
@@ -644,33 +713,19 @@ class IncidentPilot:
             timings.append({"phase": label, "duration_ms": elapsed_ms})
             logger.info("[req=%s] %s complete (%.1fms)", req_id, label, elapsed_ms)
 
-        # 1. RAG retrieval -- always runs. HyDE (_expand_query) turns the
-        #    engineer's raw description into targeted runbook-vocabulary
-        #    searches before hitting the vector store.
-        logger.info("[req=%s] HyDE expansion starting", req_id)
-        t0 = time.perf_counter()
-        queries = self._expand_query(user_input)
-        _mark("hyde_expansion", t0)
-
-        logger.info("[req=%s] RAG retrieval starting", req_id)
-        t0 = time.perf_counter()
-        chunks = self._retrieve_with_queries(queries)
-        _mark("rag_retrieval", t0)
-        rag_block = self._format_context(chunks)
-
+        # 1. RAG retrieval is no longer unconditional -- it's the
+        #    search_runbooks tool, bound alongside query_metrics/query_logs
+        #    below, and the LLM decides per turn whether it's needed. HyDE
+        #    (_expand_query) still runs in full whenever that tool fires --
+        #    see _build_rag_tool().
         scope_hint = (
             f'\n\n(If you query telemetry, scope it to service="{service}".)'
             if service else ""
         )
-        augmented_input = (
-            f"## Retrieved context (RAG)\n\n{rag_block}\n\n"
-            f"---\n\n"
-            f"Engineer's incident description:\n{user_input}{scope_hint}"
-        )
+        augmented_input = f"Engineer's incident description:\n{user_input}{scope_hint}"
         # Conversational memory: splice prior turns between the system prompt
-        # and the current augmented turn so a follow-up ("and the logs?")
-        # carries context. Raw text only -- the current turn is the only one
-        # that gets the fat RAG block.
+        # and the current turn so a follow-up ("and the logs?") carries
+        # context. Raw text only -- prior tool-round content isn't replayed.
         messages: list = [SystemMessage(content=self.system_prompt)]
         for prev_user, prev_answer in (history or []):
             messages.append(HumanMessage(content=prev_user))
@@ -680,6 +735,7 @@ class IncidentPilot:
         tool_trace: list[dict] = []
         last_metrics_result: dict | None = None
         last_logs_result: dict | None = None
+        last_rag_result: dict | None = None
 
         # 2. Priority-1 guardrail backstop: for messages that look like a
         #    deploy/rollback/hotfix/config-change request, don't even bind
@@ -709,12 +765,17 @@ class IncidentPilot:
             messages.append(response)
             t0 = time.perf_counter()
             for call in response.tool_calls:
-                result = self._call_mcp_tool(call["name"], call["args"])
+                if call["name"] in ("query_metrics", "query_logs"):
+                    result = self._call_mcp_tool(call["name"], call["args"])
+                else:
+                    result = self._call_local_tool(call["name"], call["args"])
                 tool_trace.append({"name": call["name"], "args": call["args"], "result": result})
                 if call["name"] == "query_metrics":
                     last_metrics_result = result
                 elif call["name"] == "query_logs":
                     last_logs_result = result
+                elif call["name"] == "search_runbooks":
+                    last_rag_result = result
                 messages.append(ToolMessage(content=json.dumps(result), tool_call_id=call["id"]))
             _mark(f"tool_round_{rounds + 1}_execution", t0)
             rounds += 1
@@ -759,7 +820,12 @@ class IncidentPilot:
         #    request turns (guardrail refusals aren't triage answers and
         #    don't need a [Runbook]/[Postmortem] tag).
         t0 = time.perf_counter()
-        missing_citation = not action_request and self._missing_rag_citation(response.content, chunks)
+        missing_citation = (
+            not action_request
+            and self._missing_rag_citation(
+                response.content, (last_rag_result or {}).get("chunks", [])
+            )
+        )
         _mark("citation_check", t0)
         if missing_citation:
             logger.info("[req=%s] RAG chunks retrieved but no [Runbook]/[Postmortem] tag in "
@@ -791,10 +857,12 @@ class IncidentPilot:
 
         trace_log_analysis = (last_logs_result or {}).get("log_analysis", {})
         trace_summary = (last_logs_result or {}).get("trace_summary", {})
+        trace_queries = (last_rag_result or {}).get("queries", [])
+        trace_chunks = (last_rag_result or {}).get("chunks", [])
 
         self._last_trace = {
-            "queries": queries,
-            "chunks": chunks,
+            "queries": trace_queries,
+            "chunks": trace_chunks,
             "metrics": trace_metrics,
             "log_analysis": trace_log_analysis,
             "trace_summary": trace_summary,

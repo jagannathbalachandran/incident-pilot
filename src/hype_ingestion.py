@@ -66,7 +66,7 @@ EMBEDDING_MODEL_NAME = "all-MiniLM-L6-v2"
 # Same model + temperature=0 as HyDE's _expand_query (src/incident_pilot.py)
 # -- same reasoning: reproducible ingestion, and a fair comparison means not
 # giving HyPE a different/stronger LLM than HyDE gets.
-LLM_MODEL_NAME = os.environ.get("GROQ_MODEL", "llama-3.1-8b-instant")
+LLM_MODEL_NAME = os.environ.get("GROQ_MODEL", "llama-3.3-70b-versatile")
 LLM_TEMPERATURE = 0
 
 QUESTIONS_PER_CHUNK = 3
