@@ -17,12 +17,35 @@ Usage:
     python src/app.py
 """
 
+import json
 import logging
 import os
 
 import gradio as gr
 import requests
 
+# --- Workaround for a gradio_client 1.3.0 (bundled with gradio 4.44) bug ---
+# Building the API schema for a component whose JSON schema contains a boolean
+# value (e.g. `additionalProperties: true`, which gr.Chatbot(type="messages")
+# produces) crashes with `TypeError: argument of type 'bool' is not iterable`
+# in get_type() -- which aborts demo.launch(). Patch the one function that
+# passes a bool schema through so it degrades to "bool" instead of crashing.
+# No-op on versions where the bug is already fixed.
+import gradio_client.utils as _gc_utils
+
+_gc_orig_j2p = _gc_utils._json_schema_to_python_type
+
+
+def _gc_json_schema_to_python_type(schema, defs=None):
+    if isinstance(schema, bool):
+        return "bool"
+    return _gc_orig_j2p(schema, defs)
+
+
+_gc_utils._json_schema_to_python_type = _gc_json_schema_to_python_type
+# --- end workaround ---
+
+import chat_store
 from incident_pilot import IncidentPilot
 from logging_config import setup_logging
 from observability import configure_observability
@@ -31,6 +54,13 @@ from request_context import set_request_id
 logger = logging.getLogger(__name__)
 
 pilot = IncidentPilot()
+
+# Sliding-window size for conversational memory: how many prior (user,
+# assistant) turn pairs to replay into the model. Kept small because each
+# turn's HumanMessage already carries a fat RAG block, and llama-3.1-8b-instant
+# has a 6000 tokens-per-minute per-request ceiling -- a few turns is plenty
+# without risking a 413/429.
+HISTORY_WINDOW_TURNS = 3
 
 # Incident-generator API base URL (Docker host port — override via env var)
 _FLASK_API = os.getenv("FLASK_API_URL", "http://localhost:5001")
@@ -395,24 +425,89 @@ def _format_trace(trace: dict) -> str:
     return "\n\n---\n\n".join(parts)
 
 
-def triage(incident_description: str, service: str = "(all services)"):
-    """Process a triage query and return (response_text, trace_markdown)."""
+def _source_badge(live_source: str) -> str:
+    """Map a trace data-source into the coloured header prepended to a reply."""
+    if live_source == "live":
+        logger.debug("triage badge: 🟢 Live")
+        return "🟢 **Data source: Live (Prometheus + Loki)**\n\n"
+    if live_source == "not_queried":
+        logger.debug("triage badge: ⚪ Not queried")
+        return "⚪ **Data source: Not queried — the agent answered without live telemetry**\n\n"
+    logger.debug("triage badge: 🔴 Unavailable")
+    return "🔴 **Data source: Unavailable — unable to reach Prometheus/Loki**\n\n"
+
+
+def _title_from(message: str) -> str:
+    """A short sidebar title from the first user message (first ~6 words)."""
+    words = message.strip().split()
+    title = " ".join(words[:6])
+    if len(words) > 6:
+        title += "…"
+    return title or chat_store.DEFAULT_TITLE
+
+
+def _display_content(m: dict) -> str:
+    """Content as shown in the chatbot. The data-source badge is UI chrome and
+    is NOT stored on the message (so it never pollutes the model's memory) --
+    it's re-derived here from the assistant turn's stored trace source."""
+    if m["role"] == "assistant" and m.get("trace_json"):
+        try:
+            source = json.loads(m["trace_json"]).get("source", "not_queried")
+            return _source_badge(source) + m["content"]
+        except (ValueError, TypeError):
+            pass
+    return m["content"]
+
+
+def _chatbot_messages(chat_id: str | None) -> list[dict]:
+    """A chat's stored messages as gr.Chatbot(type='messages') dicts."""
+    if not chat_id:
+        return []
+    return [
+        {"role": m["role"], "content": _display_content(m)}
+        for m in chat_store.get_messages(chat_id)
+    ]
+
+
+def triage(incident_description: str, service: str, chat_id: str | None,
+           sidebar_tick: int):
+    """Handle one chat turn: persist the user message, run the agent with
+    sliding-window memory, persist the reply + its trace, and return the
+    updated chatbot, trace panel, active chat id, sidebar refresh tick, and a
+    cleared input box.
+
+    Returns a 5-tuple mapping to
+    ``[chatbot, trace_output, current_chat_id, sidebar_tick, incident_input]``.
+    """
     if not incident_description.strip():
         logger.debug("triage: empty input")
-        return "Please describe the incident you're triaging.", ""
+        # Nothing to do -- leave every component as-is.
+        return (_chatbot_messages(chat_id), gr.update(), chat_id,
+                sidebar_tick, gr.update())
 
     target = None if service in ("", "(all services)") else service
 
-    # Generate a unique request ID for this triage session
+    # New conversation? Create it and title it from this first message.
+    new_chat = chat_id is None
+    if new_chat:
+        chat_id = chat_store.create_chat(title=_title_from(incident_description))
+
+    chat_store.append_message(chat_id, "user", incident_description)
+
+    # Sliding-window memory: the last N completed pairs (the message we just
+    # appended has no assistant reply yet, so recent_history won't include it).
+    history = chat_store.recent_history(chat_id, HISTORY_WINDOW_TURNS)
+
+    # Generate a unique request ID for this triage turn
     request_id = set_request_id()
-    logger.info("Triage request [req=%s]: '%s...' (service=%s)",
-                request_id, incident_description[:80], target or "all")
+    logger.info("Triage request [req=%s, chat=%s]: '%s...' (service=%s, history=%d turns)",
+                request_id, chat_id, incident_description[:80], target or "all", len(history))
 
     # The agent itself decides whether/which telemetry tool(s) to call --
     # no pre-fetch here, so the badge below reflects what actually happened
     # this turn, not a fetch we forced regardless of the question.
     try:
-        response = pilot.query(incident_description, service=target)
+        response = pilot.query(incident_description, service=target, history=history)
     except Exception as exc:
         # Without this, an exception here leaves Gradio's output components
         # showing whatever the *previous successful* query rendered, plus a
@@ -432,29 +527,65 @@ def triage(incident_description: str, service: str = "(all services)"):
             f"**Request ID (this query):** `{request_id}`\n\n"
             "**Status:** failed before a response was produced -- see error above / container logs."
         )
-        return error_text, error_trace
+        # Persist the failure as the assistant turn so the chat stays coherent.
+        chat_store.append_message(chat_id, "assistant", error_text)
+        bump = sidebar_tick + 1 if new_chat else sidebar_tick
+        return (_chatbot_messages(chat_id), error_trace, chat_id, bump, "")
 
     trace = pilot.get_trace()
     live_source = trace.get("source", "not_queried")
 
-    # Build the data-source badge
-    if live_source == "live":
-        badge = "🟢 **Data source: Live (Prometheus + Loki)**\n\n"
-        logger.debug("triage badge: 🟢 Live")
-    elif live_source == "not_queried":
-        badge = "⚪ **Data source: Not queried — the agent answered without live telemetry**\n\n"
-        logger.debug("triage badge: ⚪ Not queried")
-    else:
-        badge = "🔴 **Data source: Unavailable — unable to reach Prometheus/Loki**\n\n"
-        logger.debug("triage badge: 🔴 Unavailable")
+    # Store the raw response only -- the data-source badge is re-derived from
+    # the stored trace at display time (see _display_content), so the model's
+    # sliding-window memory stays free of UI chrome.
+    chat_store.append_message(chat_id, "assistant", response, trace=trace)
 
-    # Build the trace panel
+    # Build the trace panel (latest turn only)
     trace_md = _format_trace(trace)
 
     logger.info("Triage response [req=%s]: %d characters (source=%s, tool_calls=%s)",
                  request_id, len(response), live_source,
                  [t["name"] for t in trace.get("tool_calls", [])])
-    return badge + response, trace_md
+
+    # Only a brand-new chat changes the sidebar list; bump the tick to re-render.
+    bump = sidebar_tick + 1 if new_chat else sidebar_tick
+    return (_chatbot_messages(chat_id), trace_md, chat_id, bump, "")
+
+
+def start_new_chat(sidebar_tick: int):
+    """Reset to an empty, unsaved conversation (a chat row is created lazily on
+    the first message). Returns [chatbot, trace_output, current_chat_id]."""
+    logger.debug("start_new_chat")
+    return [], "Run a triage query to see the agent's trace data.", None
+
+
+def load_chat(chat_id: str):
+    """Reopen a past chat: its messages + the trace of its most recent
+    assistant turn. Returns [chatbot, trace_output, current_chat_id]."""
+    logger.info("load_chat %s", chat_id)
+    messages = chat_store.get_messages(chat_id)
+    # Most recent assistant turn's stored trace, if any.
+    trace_md = "No trace stored for this chat's turns yet."
+    for m in reversed(messages):
+        if m["role"] == "assistant" and m.get("trace_json"):
+            try:
+                trace_md = _format_trace(json.loads(m["trace_json"]))
+            except (ValueError, TypeError):
+                trace_md = "Stored trace could not be parsed."
+            break
+    return _chatbot_messages(chat_id), trace_md, chat_id
+
+
+def _delete_and_refresh(target_id: str, active_id: str | None, sidebar_tick: int):
+    """Delete a chat and refresh the sidebar. If the deleted chat is the one
+    currently open, clear the conversation view too. Returns
+    [chatbot, trace_output, current_chat_id, sidebar_tick]."""
+    chat_store.delete_chat(target_id)
+    if target_id == active_id:
+        return ([], "Run a triage query to see the agent's trace data.",
+                None, sidebar_tick + 1)
+    # A different chat stays open; just re-render the list.
+    return (_chatbot_messages(active_id), gr.update(), active_id, sidebar_tick + 1)
 
 
 # ---------------------------------------------------------------------------
@@ -487,57 +618,112 @@ with gr.Blocks(
         # TAB 1 — AI Triage
         # ================================================================
         with gr.TabItem("🚑 Triage"):
+            # Per-browser-session state. Chat contents live in SQLite; State
+            # holds only the active chat id and a tick that re-renders the
+            # sidebar when the chat list changes.
+            current_chat_id = gr.State(None)
+            sidebar_tick = gr.State(0)
+
             with gr.Row():
+                # ---------------- Sidebar: past chats ----------------
+                # Header now; the chat list is rendered into this column
+                # further down, once `chatbot`/`trace_output` (its click
+                # targets) exist -- see the `with sidebar_col:` block below.
+                with gr.Column(scale=1, min_width=200) as sidebar_col:
+                    new_chat_btn = gr.Button("➕ New chat", variant="secondary", size="sm")
+                    gr.Markdown("##### Past chats")
+
+                # ---------------- Main: conversation ----------------
                 with gr.Column(scale=4):
-                    incident_input = gr.Textbox(
-                        label="Incident description",
-                        placeholder="e.g. checkout-api p99 latency has been climbing for 15 minutes...",
-                        lines=4,
+                    chatbot = gr.Chatbot(
+                        label="Conversation",
+                        type="messages",
+                        height=480,
+                        show_copy_button=True,
                     )
-                with gr.Column(scale=1, min_width=160):
-                    triage_service_dd = gr.Dropdown(
-                        choices=TRIAGE_SERVICE_CHOICES,
-                        value="(all services)",
-                        label="Scope to service",
-                    )
-                    submit_btn = gr.Button("🚀 Triage", variant="primary", size="lg")
+                    with gr.Row():
+                        incident_input = gr.Textbox(
+                            label="Incident description",
+                            placeholder="e.g. checkout-api p99 latency has been climbing for 15 minutes...",
+                            lines=3,
+                            scale=4,
+                            autofocus=True,
+                        )
+                        with gr.Column(scale=1, min_width=160):
+                            triage_service_dd = gr.Dropdown(
+                                choices=TRIAGE_SERVICE_CHOICES,
+                                value="(all services)",
+                                label="Scope to service",
+                            )
+                            submit_btn = gr.Button("🚀 Triage", variant="primary", size="lg")
 
-            summary_output = gr.Markdown(label="Triage summary")
+                    # Expandable trace panel (latest turn)
+                    with gr.Accordion(label="🔍 Agent trace — show what the agent saw", open=False):
+                        trace_output = gr.Markdown(
+                            label="Agent trace",
+                            value="Run a triage query to see the agent's trace data.",
+                        )
 
-            # Expandable trace panel
-            with gr.Accordion(label="🔍 Agent trace — show what the agent saw", open=False):
-                trace_output = gr.Markdown(
-                    label="Agent trace",
-                    value="Run a triage query to see the agent's trace data.",
-                )
+                    # Current incident state (shared across tabs — always visible)
+                    with gr.Accordion(label="📊 Current Incident State", open=False):
+                        triage_state_output = gr.Markdown(
+                            value=_get_state_markdown(),
+                        )
+                        refresh_state_btn = gr.Button(
+                            "🔄 Refresh State",
+                            variant="secondary",
+                            size="sm",
+                        )
+                        refresh_state_btn.click(
+                            fn=_refresh_state,
+                            outputs=[triage_state_output],
+                        )
 
-            # Current incident state (shared across tabs — always visible)
-            with gr.Accordion(label="📊 Current Incident State", open=False):
-                triage_state_output = gr.Markdown(
-                    value=_get_state_markdown(),
-                )
-                refresh_state_btn = gr.Button(
-                    "🔄 Refresh State",
-                    variant="secondary",
-                    size="sm",
-                )
-                refresh_state_btn.click(
-                    fn=_refresh_state,
-                    outputs=[triage_state_output],
-                )
+                    gr.Examples(examples=EXAMPLE_QUERIES, inputs=incident_input)
 
-            gr.Examples(examples=EXAMPLE_QUERIES, inputs=incident_input)
+            _triage_inputs = [incident_input, triage_service_dd, current_chat_id, sidebar_tick]
+            _triage_outputs = [chatbot, trace_output, current_chat_id, sidebar_tick, incident_input]
+            submit_btn.click(fn=triage, inputs=_triage_inputs, outputs=_triage_outputs)
+            incident_input.submit(fn=triage, inputs=_triage_inputs, outputs=_triage_outputs)
 
-            submit_btn.click(
-                fn=triage,
-                inputs=[incident_input, triage_service_dd],
-                outputs=[summary_output, trace_output],
+            new_chat_btn.click(
+                fn=start_new_chat,
+                inputs=[sidebar_tick],
+                outputs=[chatbot, trace_output, current_chat_id],
             )
-            incident_input.submit(
-                fn=triage,
-                inputs=[incident_input, triage_service_dd],
-                outputs=[summary_output, trace_output],
-            )
+
+            # Render the past-chats list into the sidebar column now that its
+            # click targets (chatbot/trace_output) exist. Re-entering the
+            # column as a context manager appends into it. `@gr.render`
+            # re-executes whenever sidebar_tick / current_chat_id change, so a
+            # new chat or a delete refreshes the list.
+            with sidebar_col:
+                @gr.render(inputs=[sidebar_tick, current_chat_id])
+                def _render_sidebar(_tick, active_id):
+                    chats = chat_store.list_chats()
+                    if not chats:
+                        gr.Markdown("_No chats yet — ask a question to start one._")
+                        return
+                    for c in chats:
+                        marker = "▸ " if c["id"] == active_id else ""
+                        with gr.Row():
+                            open_btn = gr.Button(
+                                f"{marker}{c['title']}",
+                                size="sm",
+                                variant="primary" if c["id"] == active_id else "secondary",
+                                scale=5,
+                            )
+                            del_btn = gr.Button("🗑", size="sm", scale=1, min_width=40)
+                        open_btn.click(
+                            fn=load_chat,
+                            inputs=gr.State(c["id"]),
+                            outputs=[chatbot, trace_output, current_chat_id],
+                        )
+                        del_btn.click(
+                            fn=_delete_and_refresh,
+                            inputs=[gr.State(c["id"]), current_chat_id, sidebar_tick],
+                            outputs=[chatbot, trace_output, current_chat_id, sidebar_tick],
+                        )
 
         # ================================================================
         # TAB 2 — Incident Control

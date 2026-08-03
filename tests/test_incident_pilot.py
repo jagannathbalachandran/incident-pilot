@@ -18,7 +18,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 from incident_pilot import IncidentPilot
 from langchain_core.documents import Document
-from langchain_core.messages import AIMessage, SystemMessage, ToolMessage
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 
 # ---------------------------------------------------------------------------
 # Test inputs
@@ -362,6 +362,65 @@ class TestAgentStructure(unittest.TestCase):
             messages[0], SystemMessage,
             "First message sent to the model must be a SystemMessage.",
         )
+
+    def test_history_is_injected_as_prior_turns(self):
+        """Prior (user, assistant) pairs passed via `history` are spliced into
+        the messages list -- as HumanMessage/AIMessage -- between the system
+        prompt and the current (RAG-augmented) turn, giving the model
+        conversational memory."""
+        with patch("incident_pilot.ChatGroq") as mock_groq_class, \
+             patch("incident_pilot.MCPClient"):
+            mock_model = MagicMock()
+            mock_model.invoke.return_value = FAKE_HYDE_RESPONSE
+            mock_model.bind_tools.return_value.invoke.return_value = AIMessage(
+                content="mocked", tool_calls=[],
+            )
+            mock_groq_class.return_value = mock_model
+            pilot = IncidentPilot()
+        pilot.vectorstore = None  # keep the test scoped to message ordering
+
+        history = [
+            ("checkout-api p99 is climbing", "Looks like connection-pool exhaustion."),
+            ("what do the logs say?", "Error clusters around pool_acquire timeouts."),
+        ]
+        pilot.query("and the payment-service?", history=history)
+
+        messages = pilot.model_with_tools.invoke.call_args[0][0]
+
+        # [System, Human(prev1), AI(prev1), Human(prev2), AI(prev2), Human(current)]
+        self.assertIsInstance(messages[0], SystemMessage)
+        self.assertIsInstance(messages[1], HumanMessage)
+        self.assertEqual(messages[1].content, "checkout-api p99 is climbing")
+        self.assertIsInstance(messages[2], AIMessage)
+        self.assertEqual(messages[2].content, "Looks like connection-pool exhaustion.")
+        self.assertIsInstance(messages[3], HumanMessage)
+        self.assertEqual(messages[3].content, "what do the logs say?")
+        self.assertIsInstance(messages[4], AIMessage)
+        self.assertEqual(messages[4].content, "Error clusters around pool_acquire timeouts.")
+        # The current turn is last and carries the raw user input (augmented).
+        self.assertIsInstance(messages[5], HumanMessage)
+        self.assertIn("and the payment-service?", messages[5].content)
+
+    def test_history_defaults_to_no_prior_turns(self):
+        """Without `history`, the message list is just System + the current
+        turn -- unchanged from the pre-memory behaviour."""
+        with patch("incident_pilot.ChatGroq") as mock_groq_class, \
+             patch("incident_pilot.MCPClient"):
+            mock_model = MagicMock()
+            mock_model.invoke.return_value = FAKE_HYDE_RESPONSE
+            mock_model.bind_tools.return_value.invoke.return_value = AIMessage(
+                content="mocked", tool_calls=[],
+            )
+            mock_groq_class.return_value = mock_model
+            pilot = IncidentPilot()
+        pilot.vectorstore = None
+
+        pilot.query("What's the current p99 latency for checkout-api?")
+
+        messages = pilot.model_with_tools.invoke.call_args[0][0]
+        self.assertIsInstance(messages[0], SystemMessage)
+        self.assertIsInstance(messages[1], HumanMessage)
+        self.assertEqual(len(messages), 2)
 
     def test_tool_call_round_trip(self):
         """The model requests query_metrics on round 1; we execute it via the

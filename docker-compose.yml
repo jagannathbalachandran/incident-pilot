@@ -156,10 +156,16 @@ services:
       - PHOENIX_PROJECT_NAME=${PHOENIX_PROJECT_NAME:-incident-pilot}
       - PHOENIX_COLLECTOR_ENDPOINT=${PHOENIX_COLLECTOR_ENDPOINT:-}
       - PHOENIX_API_KEY=${PHOENIX_API_KEY:-}
+      # Where the multi-turn chat history (SQLite) lives. Pointed at the
+      # bind-mounted /app/chats dir below so conversations persist across
+      # container restarts.
+      - CHAT_DB_PATH=${CHAT_DB_PATH:-/app/chats/chats.db}
     volumes:
       # Mount the vector store from host so it persists across container restarts
       # Run 'uv run python src/ingestion.py' first if directory is empty
       - ./synthetic-data/vectorstore:/app/synthetic-data/vectorstore
+      # Persist chat history (SQLite) across container restarts
+      - ./chats:/app/chats
     networks:
       - monitoring
     depends_on:

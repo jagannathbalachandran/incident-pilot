@@ -37,7 +37,7 @@ from typing import Optional
 
 from dotenv import load_dotenv
 from langchain_groq import ChatGroq
-from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 from langchain_core.tools import StructuredTool
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_chroma import Chroma
@@ -605,7 +605,8 @@ class IncidentPilot:
     # ------------------------------------------------------------------
 
     @track(name="incident_triage")
-    def query(self, user_input: str, service: str | None = None) -> str:
+    def query(self, user_input: str, service: str | None = None,
+              history: list[tuple[str, str]] | None = None) -> str:
         """Run a full triage query: RAG retrieval (always) + an MCP
         tool-calling loop over ``query_metrics``/``query_logs`` that the
         model itself decides whether/when to use + a cited answer.
@@ -614,6 +615,13 @@ class IncidentPilot:
             user_input: The engineer's incident description.
             service: Optional hint passed to the model on which service to
                      scope any telemetry query to, if it decides to call one.
+            history: Optional sliding window of prior ``(user, assistant)``
+                     raw-text turns to give the model conversational memory.
+                     Already windowed by the caller (the UI/session layer);
+                     the pilot stays stateless and just injects it. Raw text
+                     only -- never the RAG-augmented form or tool rounds --
+                     so a few turns of memory don't blow the model's token
+                     ceiling.
 
         Returns the LLM's cited triage summary as a string.
         """
@@ -659,10 +667,15 @@ class IncidentPilot:
             f"---\n\n"
             f"Engineer's incident description:\n{user_input}{scope_hint}"
         )
-        messages = [
-            SystemMessage(content=self.system_prompt),
-            HumanMessage(content=augmented_input),
-        ]
+        # Conversational memory: splice prior turns between the system prompt
+        # and the current augmented turn so a follow-up ("and the logs?")
+        # carries context. Raw text only -- the current turn is the only one
+        # that gets the fat RAG block.
+        messages: list = [SystemMessage(content=self.system_prompt)]
+        for prev_user, prev_answer in (history or []):
+            messages.append(HumanMessage(content=prev_user))
+            messages.append(AIMessage(content=prev_answer))
+        messages.append(HumanMessage(content=augmented_input))
 
         tool_trace: list[dict] = []
         last_metrics_result: dict | None = None
