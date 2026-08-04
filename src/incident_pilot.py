@@ -36,6 +36,7 @@ import time
 from pathlib import Path
 from typing import Optional
 
+import groq
 from dotenv import load_dotenv
 from langchain_groq import ChatGroq
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
@@ -86,36 +87,30 @@ def _build_tools(mcp_client: MCPClient) -> list[StructuredTool]:
     """
 
     def query_metrics(service: Optional[str] = None, timeframe: str = "15m") -> dict:
-        """Query live Prometheus metrics: p99 latency, error rate, active
-        connections, and cache hit ratio. If Prometheus is unreachable,
-        returns ``source: "unavailable"`` with no data -- report this to
-        the engineer as "unable to reach Prometheus" rather than
-        substituting stale data.
+        """Live Prometheus metrics: p99 latency, error rate, active
+        connections, cache hit ratio. Returns ``source: "unavailable"``
+        (no data) if Prometheus is unreachable -- report that plainly,
+        don't substitute stale data.
 
         Args:
-            service: Service name to scope to (e.g. "checkout-api"). Omit
-                to query across every simulated service at once.
-            timeframe: Relative window like "15m" or "1h". Defaults to the
-                last 15 minutes.
+            service: Scope to one service (e.g. "checkout-api"). Omit to
+                query all.
+            timeframe: e.g. "15m" or "1h". Default 15m.
         """
         return mcp_client.call_tool(
             "query_metrics", {"service": service, "timeframe": timeframe}
         )
 
     def query_logs(service: Optional[str] = None, timeframe: str = "15m") -> dict:
-        """Query application logs and return a structured analysis: log
-        level breakdown, top recurring message patterns, error clusters,
-        and reconstructed user-journey traces (login -> ... -> logout).
-        If Loki is unreachable, returns ``source: "unavailable"`` with no
-        data -- report this to the engineer as "unable to reach Loki"
-        rather than substituting stale data.
+        """Structured log analysis: level breakdown, top recurring
+        patterns, error clusters, reconstructed user journeys. Returns
+        ``source: "unavailable"`` (no data) if Loki is unreachable --
+        report that plainly, don't substitute stale data.
 
         Args:
-            service: Service name to scope to. Omit to query across every
-                simulated service (needed to reconstruct a full journey,
-                since its spans land in more than one service's log stream).
-            timeframe: Relative window like "15m" or "1h". Defaults to the
-                last 15 minutes.
+            service: Scope to one service. Omit to query all -- needed to
+                reconstruct a journey whose spans cross services.
+            timeframe: e.g. "15m" or "1h". Default 15m.
         """
         return mcp_client.call_tool(
             "query_logs", {"service": service, "timeframe": timeframe}
@@ -419,25 +414,15 @@ class IncidentPilot:
         local call (no MCP round trip)."""
 
         def search_runbooks(query: str) -> dict:
-            """Search runbooks and postmortems for how to diagnose or resolve
-            a known incident pattern -- procedural/prescriptive guidance
-            (mitigation steps, escalation criteria, config parameters) and
-            historical context (has this happened before, what was the root
-            cause). Does NOT return live/current system state -- use
-            query_metrics or query_logs for that.
-
-            Call this when the question is about *how to fix* something,
-            *what to check* next, or *whether this has happened before*. Do
-            NOT call this for a purely live-telemetry question with no
-            resolution angle (e.g. "is there an error right now") --
-            query_metrics/query_logs alone answer those. If the question has
-            both angles, call this tool AND the relevant telemetry tool(s).
+            """Search runbooks/postmortems for how to diagnose or resolve a
+            known incident pattern, or historical context (has this
+            happened before). Does NOT return live/current system state --
+            use query_metrics/query_logs for that.
 
             Args:
                 query: The engineer's question, in their own words --
-                    internally expanded into targeted runbook-vocabulary
-                    search queries before retrieval, so no need to
-                    pre-translate it yourself.
+                    internally expanded into runbook-vocabulary search
+                    queries, so no need to pre-translate it yourself.
             """
             queries = self._expand_query(query)
             chunks = self._retrieve_with_queries(queries)
@@ -465,6 +450,36 @@ class IncidentPilot:
     # ------------------------------------------------------------------
     # MCP tool-calling loop
     # ------------------------------------------------------------------
+
+    @staticmethod
+    def _is_tool_use_failed(exc: "groq.BadRequestError") -> bool:
+        body = exc.body if isinstance(exc.body, dict) else {}
+        return (body.get("error") or {}).get("code") == "tool_use_failed"
+
+    def _invoke_with_tool_retry(self, model, messages: list, req_id: str):
+        """Invoke a tools-bound model, retrying once on Groq's
+        ``tool_use_failed`` error before falling back to a no-tools answer.
+
+        llama-3.3-70b-versatile's native tool-call tag parser occasionally
+        emits a malformed tag (e.g. ``<function=name{...}`` missing the
+        ``>`` before the args), which Groq rejects with a 400 before this
+        process ever sees a usable response. This is documented upstream
+        flakiness -- see
+        https://community.groq.com/discussion-forum-7/tool-use-fail-rate-increases-recently-216
+        -- not a deterministic prompt problem, so a same-model retry usually
+        succeeds. If it fails twice in a row, fall back to a no-tools invoke
+        so the turn still produces an answer instead of crashing, mirroring
+        the MAX_TOOL_ROUNDS forced-final-answer fallback below.
+        """
+        for attempt in (1, 2):
+            try:
+                return model.invoke(messages)
+            except groq.BadRequestError as exc:
+                if not self._is_tool_use_failed(exc):
+                    raise
+                logger.warning("[req=%s] tool_use_failed (attempt %d/2)", req_id, attempt)
+        logger.warning("[req=%s] tool_use_failed twice -- falling back to a no-tools answer", req_id)
+        return self.model.invoke(messages)
 
     @track(type="tool", name="mcp_tool")
     def _call_mcp_tool(self, name: str, args: dict) -> dict:
@@ -779,7 +794,7 @@ class IncidentPilot:
         #    executing real MCP round trips for whatever it asks for.
         logger.info("[req=%s] initial LLM call starting (tools_bound=%s)", req_id, not action_request)
         t0 = time.perf_counter()
-        response = model_for_this_turn.invoke(messages)
+        response = self._invoke_with_tool_retry(model_for_this_turn, messages, req_id)
         _mark("initial_llm_call", t0)
 
         requested_calls = [
@@ -808,7 +823,7 @@ class IncidentPilot:
             _mark(f"tool_round_{rounds + 1}_execution", t0)
             rounds += 1
             t0 = time.perf_counter()
-            response = model_for_this_turn.invoke(messages)
+            response = self._invoke_with_tool_retry(model_for_this_turn, messages, req_id)
             _mark(f"tool_round_{rounds}_llm_call", t0)
 
         if getattr(response, "tool_calls", None):
@@ -839,7 +854,7 @@ class IncidentPilot:
                         f"[Contradiction] citation rule."
             ))
             t0 = time.perf_counter()
-            response = model_for_this_turn.invoke(messages)
+            response = self._invoke_with_tool_retry(model_for_this_turn, messages, req_id)
             _mark("contradiction_revision_llm_call", t0)
 
         # 5. Citation enforcement -- prompting alone isn't reliable, especially
@@ -868,7 +883,7 @@ class IncidentPilot:
                         "Citations rule -- don't just describe it in prose."
             ))
             t0 = time.perf_counter()
-            response = model_for_this_turn.invoke(messages)
+            response = self._invoke_with_tool_retry(model_for_this_turn, messages, req_id)
             _mark("citation_revision_llm_call", t0)
 
         total_ms = round((time.perf_counter() - query_start) * 1000, 1)

@@ -14,6 +14,9 @@ import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import groq
+import httpx
+
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 from incident_pilot import IncidentPilot
@@ -951,6 +954,85 @@ class TestCitationEnforcement(unittest.TestCase):
         # Just the refusal itself -- no HyDE call (search_runbooks never
         # bound/invoked) and no citation-revision call.
         self.assertEqual(mock_model.invoke.call_count, 1)
+
+
+class TestToolUseFailedRetry(unittest.TestCase):
+    """Tests for _invoke_with_tool_retry. Groq's llama-3.3-70b-versatile
+    occasionally emits a malformed native tool-call tag, which Groq rejects
+    with a 400 tool_use_failed before this process ever sees a usable
+    response -- documented upstream flakiness
+    (https://community.groq.com/discussion-forum-7/tool-use-fail-rate-increases-recently-216),
+    not a deterministic prompt problem. This retries once against the same
+    model, then falls back to a no-tools answer rather than crashing the turn."""
+
+    @staticmethod
+    def _bad_request_error(code: str) -> groq.BadRequestError:
+        request = httpx.Request("POST", "https://api.groq.com/openai/v1/chat/completions")
+        response = httpx.Response(400, request=request)
+        return groq.BadRequestError(
+            "Failed to call a function.",
+            response=response,
+            body={"error": {"code": code, "message": "..."}},
+        )
+
+    def _make_pilot(self) -> IncidentPilot:
+        with patch("incident_pilot.ChatGroq") as mock_groq_class, \
+             patch("incident_pilot.MCPClient"):
+            mock_groq_class.return_value = MagicMock()
+            pilot = IncidentPilot()
+        return pilot
+
+    def test_succeeds_on_first_attempt_without_retry(self):
+        pilot = self._make_pilot()
+        good_response = AIMessage(content="answer", tool_calls=[])
+        tools_model = MagicMock()
+        tools_model.invoke.return_value = good_response
+
+        result = pilot._invoke_with_tool_retry(tools_model, [], "req-1")
+
+        self.assertIs(result, good_response)
+        self.assertEqual(tools_model.invoke.call_count, 1)
+
+    def test_succeeds_on_retry_after_one_tool_use_failed(self):
+        pilot = self._make_pilot()
+        good_response = AIMessage(content="answer", tool_calls=[])
+        tools_model = MagicMock()
+        tools_model.invoke.side_effect = [
+            self._bad_request_error("tool_use_failed"), good_response,
+        ]
+
+        result = pilot._invoke_with_tool_retry(tools_model, [], "req-1")
+
+        self.assertIs(result, good_response)
+        self.assertEqual(tools_model.invoke.call_count, 2)
+        pilot.model.invoke.assert_not_called()
+
+    def test_falls_back_to_no_tools_after_two_failures(self):
+        pilot = self._make_pilot()
+        fallback_response = AIMessage(content="fallback answer", tool_calls=[])
+        tools_model = MagicMock()
+        tools_model.invoke.side_effect = [
+            self._bad_request_error("tool_use_failed"),
+            self._bad_request_error("tool_use_failed"),
+        ]
+        pilot.model = MagicMock()
+        pilot.model.invoke.return_value = fallback_response
+
+        result = pilot._invoke_with_tool_retry(tools_model, ["msg"], "req-1")
+
+        self.assertIs(result, fallback_response)
+        self.assertEqual(tools_model.invoke.call_count, 2)
+        pilot.model.invoke.assert_called_once_with(["msg"])
+
+    def test_reraises_non_tool_use_failed_errors(self):
+        pilot = self._make_pilot()
+        tools_model = MagicMock()
+        tools_model.invoke.side_effect = self._bad_request_error("invalid_request_error")
+
+        with self.assertRaises(groq.BadRequestError):
+            pilot._invoke_with_tool_retry(tools_model, [], "req-1")
+
+        self.assertEqual(tools_model.invoke.call_count, 1)
 
 
 if __name__ == "__main__":
