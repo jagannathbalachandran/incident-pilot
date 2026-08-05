@@ -14,9 +14,12 @@ import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import groq
+import httpx
+
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
-from incident_pilot import IncidentPilot
+from incident_pilot import IncidentPilot, ToolCallServiceError
 from langchain_core.documents import Document
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 
@@ -617,6 +620,44 @@ class TestHydeQueryExpansion(unittest.TestCase):
             ["chunk 1", "chunk 4", "chunk 6", "chunk 2", "chunk 7", "chunk 3"],
         )
 
+    def test_retrieve_with_queries_drops_chunks_beyond_distance_cutoff(self):
+        """Chunks whose best distance exceeds MAX_RETRIEVAL_DISTANCE are
+        dropped -- so a query the corpus has no runbook for (every hit far
+        away) collapses to an empty result, signalling 'novel issue' rather
+        than returning the nearest-but-irrelevant runbook."""
+        from incident_pilot import MAX_RETRIEVAL_DISTANCE
+
+        pilot = self._make_pilot(AIMessage(content="rate limiting", tool_calls=[]))
+
+        near = Document(page_content="relevant", metadata={"source": "s.pdf", "section": "near"})
+        far = Document(page_content="irrelevant", metadata={"source": "s.pdf", "section": "far"})
+        mock_vectorstore = MagicMock()
+        mock_vectorstore.similarity_search_with_score.return_value = [
+            (near, MAX_RETRIEVAL_DISTANCE - 0.1),
+            (far, MAX_RETRIEVAL_DISTANCE + 0.1),
+        ]
+        pilot.vectorstore = mock_vectorstore
+
+        chunks = pilot._retrieve_with_queries(["one query"])
+
+        self.assertEqual([c["content"] for c in chunks], ["relevant"])
+
+    def test_retrieve_with_queries_empty_when_all_beyond_cutoff(self):
+        """A truly novel query (all hits beyond the cutoff) returns nothing --
+        the 'no relevant runbook' signal the agent falls back on."""
+        from incident_pilot import MAX_RETRIEVAL_DISTANCE
+
+        pilot = self._make_pilot(AIMessage(content="novel issue", tool_calls=[]))
+
+        far = Document(page_content="unrelated", metadata={"source": "s.pdf", "section": "far"})
+        mock_vectorstore = MagicMock()
+        mock_vectorstore.similarity_search_with_score.return_value = [
+            (far, MAX_RETRIEVAL_DISTANCE + 0.5),
+        ]
+        pilot.vectorstore = mock_vectorstore
+
+        self.assertEqual(pilot._retrieve_with_queries(["one query"]), [])
+
 
 class TestCitationEnforcement(unittest.TestCase):
     """Tests for the code-level citation backstop: prompting alone doesn't
@@ -699,6 +740,88 @@ class TestCitationEnforcement(unittest.TestCase):
         self.assertEqual(response, "I can't roll back production for you.")
         # HyDE + the refusal itself -- no third "citation revision" call.
         self.assertEqual(mock_model.invoke.call_count, 2)
+
+
+class TestToolUseFailedRetry(unittest.TestCase):
+    """Tests for _invoke_with_tool_retry. Groq's llama-3.3-70b-versatile
+    occasionally emits a malformed native tool-call tag, which Groq rejects
+    with a 400 tool_use_failed before this process ever sees a usable
+    response -- documented upstream flakiness
+    (https://community.groq.com/discussion-forum-7/tool-use-fail-rate-increases-recently-216),
+    not a deterministic prompt problem. This retries once against the same
+    model; if it fails twice in a row, it raises ToolCallServiceError rather
+    than silently falling back to a no-tools answer -- a silent fallback
+    would misrepresent an infrastructure failure as the agent deciding no
+    tool was needed."""
+
+    @staticmethod
+    def _bad_request_error(code: str) -> groq.BadRequestError:
+        request = httpx.Request("POST", "https://api.groq.com/openai/v1/chat/completions")
+        response = httpx.Response(400, request=request)
+        return groq.BadRequestError(
+            "Failed to call a function.",
+            response=response,
+            body={"error": {"code": code, "message": "..."}},
+        )
+
+    def _make_pilot(self) -> IncidentPilot:
+        with patch("incident_pilot.ChatGroq") as mock_groq_class, \
+             patch("incident_pilot.MCPClient"):
+            mock_groq_class.return_value = MagicMock()
+            pilot = IncidentPilot()
+        return pilot
+
+    def test_succeeds_on_first_attempt_without_retry(self):
+        pilot = self._make_pilot()
+        good_response = AIMessage(content="answer", tool_calls=[])
+        tools_model = MagicMock()
+        tools_model.invoke.return_value = good_response
+
+        result = pilot._invoke_with_tool_retry(tools_model, [], "req-1")
+
+        self.assertIs(result, good_response)
+        self.assertEqual(tools_model.invoke.call_count, 1)
+
+    def test_succeeds_on_retry_after_one_tool_use_failed(self):
+        pilot = self._make_pilot()
+        good_response = AIMessage(content="answer", tool_calls=[])
+        tools_model = MagicMock()
+        tools_model.invoke.side_effect = [
+            self._bad_request_error("tool_use_failed"), good_response,
+        ]
+
+        result = pilot._invoke_with_tool_retry(tools_model, [], "req-1")
+
+        self.assertIs(result, good_response)
+        self.assertEqual(tools_model.invoke.call_count, 2)
+        pilot.model.invoke.assert_not_called()
+
+    def test_raises_tool_call_service_error_after_two_failures(self):
+        """No silent no-tools fallback -- that would misrepresent an
+        infrastructure failure as the agent deciding no tool was needed."""
+        pilot = self._make_pilot()
+        tools_model = MagicMock()
+        tools_model.invoke.side_effect = [
+            self._bad_request_error("tool_use_failed"),
+            self._bad_request_error("tool_use_failed"),
+        ]
+        pilot.model = MagicMock()
+
+        with self.assertRaises(ToolCallServiceError):
+            pilot._invoke_with_tool_retry(tools_model, ["msg"], "req-1")
+
+        self.assertEqual(tools_model.invoke.call_count, 2)
+        pilot.model.invoke.assert_not_called()
+
+    def test_reraises_non_tool_use_failed_errors(self):
+        pilot = self._make_pilot()
+        tools_model = MagicMock()
+        tools_model.invoke.side_effect = self._bad_request_error("invalid_request_error")
+
+        with self.assertRaises(groq.BadRequestError):
+            pilot._invoke_with_tool_retry(tools_model, [], "req-1")
+
+        self.assertEqual(tools_model.invoke.call_count, 1)
 
 
 if __name__ == "__main__":

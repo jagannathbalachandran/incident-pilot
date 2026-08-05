@@ -35,6 +35,7 @@ import time
 from pathlib import Path
 from typing import Optional
 
+import groq
 from dotenv import load_dotenv
 from langchain_groq import ChatGroq
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
@@ -48,6 +49,15 @@ from observability import configure_observability, track, update_trace_metadata
 from request_context import get_request_id
 
 logger = logging.getLogger(__name__)
+
+
+class ToolCallServiceError(RuntimeError):
+    """Raised when Groq's tool-call service fails (``tool_use_failed``)
+    twice in a row for the same request. Deliberately NOT swallowed into a
+    no-tools answer -- doing so would silently answer as if the agent had
+    decided a tool wasn't needed, when it actually tried and the call
+    failed at the infrastructure level. Callers should surface this as a
+    "please retry" error, not a triage result."""
 
 # Load .env from repo root so GROQ_API_KEY is available without a shell export
 load_dotenv(Path(__file__).parent.parent / ".env")
@@ -85,36 +95,30 @@ def _build_tools(mcp_client: MCPClient) -> list[StructuredTool]:
     """
 
     def query_metrics(service: Optional[str] = None, timeframe: str = "15m") -> dict:
-        """Query live Prometheus metrics: p99 latency, error rate, active
-        connections, and cache hit ratio. If Prometheus is unreachable,
-        returns ``source: "unavailable"`` with no data -- report this to
-        the engineer as "unable to reach Prometheus" rather than
-        substituting stale data.
+        """Live Prometheus metrics: p99 latency, error rate, active
+        connections, cache hit ratio. Returns ``source: "unavailable"``
+        (no data) if Prometheus is unreachable -- report that plainly,
+        don't substitute stale data.
 
         Args:
-            service: Service name to scope to (e.g. "checkout-api"). Omit
-                to query across every simulated service at once.
-            timeframe: Relative window like "15m" or "1h". Defaults to the
-                last 15 minutes.
+            service: Scope to one service (e.g. "checkout-api"). Omit to
+                query all.
+            timeframe: e.g. "15m" or "1h". Default 15m.
         """
         return mcp_client.call_tool(
             "query_metrics", {"service": service, "timeframe": timeframe}
         )
 
     def query_logs(service: Optional[str] = None, timeframe: str = "15m") -> dict:
-        """Query application logs and return a structured analysis: log
-        level breakdown, top recurring message patterns, error clusters,
-        and reconstructed user-journey traces (login -> ... -> logout).
-        If Loki is unreachable, returns ``source: "unavailable"`` with no
-        data -- report this to the engineer as "unable to reach Loki"
-        rather than substituting stale data.
+        """Structured log analysis: level breakdown, top recurring
+        patterns, error clusters, reconstructed user journeys. Returns
+        ``source: "unavailable"`` (no data) if Loki is unreachable --
+        report that plainly, don't substitute stale data.
 
         Args:
-            service: Service name to scope to. Omit to query across every
-                simulated service (needed to reconstruct a full journey,
-                since its spans land in more than one service's log stream).
-            timeframe: Relative window like "15m" or "1h". Defaults to the
-                last 15 minutes.
+            service: Scope to one service. Omit to query all -- needed to
+                reconstruct a journey whose spans cross services.
+            timeframe: e.g. "15m" or "1h". Default 15m.
         """
         return mcp_client.call_tool(
             "query_logs", {"service": service, "timeframe": timeframe}
@@ -140,6 +144,25 @@ CHUNKS_PER_QUERY = 3
 # ceiling on the very first call, before any tool round trip -- this bounds
 # it while still keeping the multi-angle HyDE search itself unrestricted.
 MAX_RETRIEVED_CHUNKS = 6
+
+# Maximum L2 distance for a chunk to count as a relevant match. Chroma's
+# default metric is L2 (lower = more similar) and the corpus is embedded with
+# all-MiniLM-L6-v2. Without a cutoff, similarity_search always returns the k
+# nearest chunks *regardless of how far away they are*, so a query about an
+# issue the corpus has no runbook for (e.g. API rate-limiting) still comes back
+# with the least-irrelevant runbook -- which the citation backstop then forces
+# the model to cite, producing a confidently misgrounded answer. Empirically
+# (measured against this corpus) matches fall in three bands: genuinely
+# relevant <=~0.77, tangentially related ~0.86-0.92 (e.g. a "429 rate limit"
+# query matching the generic error-rate-high triage -- 429s are errors), and
+# unrelated noise >=~1.03 (other services' runbooks, off-topic queries). The
+# cleanest gap is 0.92->1.03, so 1.0 drops the noise while still letting a
+# weakly-relevant runbook through -- the model then cites it alongside labelled
+# [Agent inference] guidance, degrading gracefully rather than either dumping
+# an irrelevant runbook or refusing. Lower this toward ~0.82 to also treat the
+# tangential band as "novel" (pure general-reasoning answers), at the cost of a
+# thinner margin above the 0.77 relevant band.
+MAX_RETRIEVAL_DISTANCE = 1.0
 
 # HyDE expansion should be deterministic for reproducible retrieval evals --
 # see _expand_query. Named here (not just inlined at the call site) so
@@ -357,11 +380,20 @@ class IncidentPilot:
 
         ranked = sorted(best_by_fingerprint.values(), key=lambda pair: pair[0])
         total_unique = len(ranked)
-        chunks = [chunk for _score, chunk in ranked[:MAX_RETRIEVED_CHUNKS]]
+        # Drop chunks beyond the relevance cutoff before capping: for a novel
+        # issue the corpus has no doc for, every "match" is far away, so this
+        # collapses to an empty result -- an honest "no relevant runbook"
+        # signal the agent can act on (fall back to general reasoning) instead
+        # of citing the nearest-but-irrelevant runbook. See MAX_RETRIEVAL_DISTANCE.
+        relevant = [pair for pair in ranked if pair[0] <= MAX_RETRIEVAL_DISTANCE]
+        dropped = total_unique - len(relevant)
+        chunks = [chunk for _score, chunk in relevant[:MAX_RETRIEVED_CHUNKS]]
 
-        logger.info("RAG retrieved %d unique chunk(s) across %d quer(y/ies), "
+        logger.info("RAG retrieved %d unique chunk(s) across %d quer(y/ies); "
+                     "%d beyond distance cutoff %.2f dropped; "
                      "ranked by similarity (top %d sent to LLM): %s",
-                     total_unique, len(queries), len(chunks),
+                     total_unique, len(queries), dropped, MAX_RETRIEVAL_DISTANCE,
+                     len(chunks),
                      [f"{c['source']} / {c['section']}" for c in chunks])
         return chunks
 
@@ -388,6 +420,45 @@ class IncidentPilot:
     # ------------------------------------------------------------------
     # MCP tool-calling loop
     # ------------------------------------------------------------------
+
+    @staticmethod
+    def _is_tool_use_failed(exc: "groq.BadRequestError") -> bool:
+        body = exc.body if isinstance(exc.body, dict) else {}
+        return (body.get("error") or {}).get("code") == "tool_use_failed"
+
+    def _invoke_with_tool_retry(self, model, messages: list, req_id: str):
+        """Invoke a tools-bound model, retrying once (same model, tools
+        still bound) on Groq's ``tool_use_failed`` error.
+
+        llama-3.3-70b-versatile's native tool-call tag parser occasionally
+        emits a malformed tag (e.g. ``<function=name{...}`` missing the
+        ``>`` before the args), which Groq rejects with a 400 before this
+        process ever sees a usable response. This is documented upstream
+        flakiness -- see
+        https://community.groq.com/discussion-forum-7/tool-use-fail-rate-increases-recently-216
+        -- not a deterministic prompt problem, so a same-model retry usually
+        succeeds.
+
+        If it fails twice in a row, this raises ``ToolCallServiceError``
+        rather than falling back to a no-tools answer: a silent fallback
+        would answer as though the agent decided no tool was needed, when
+        it actually tried to call one and the call failed -- misleading in
+        exactly the cases (a live-triage question) where the engineer most
+        needs to know telemetry wasn't actually checked. The caller should
+        surface this as a "please retry" error instead of a triage result.
+        """
+        for attempt in (1, 2):
+            try:
+                return model.invoke(messages)
+            except groq.BadRequestError as exc:
+                if not self._is_tool_use_failed(exc):
+                    raise
+                logger.warning("[req=%s] tool_use_failed (attempt %d/2)", req_id, attempt)
+        logger.error("[req=%s] tool_use_failed twice -- aborting turn", req_id)
+        raise ToolCallServiceError(
+            "Groq's tool-call service failed twice in a row for this request "
+            "(tool_use_failed). This is upstream flakiness, not a bug -- please retry."
+        )
 
     @track(type="tool", name="mcp_tool")
     def _call_mcp_tool(self, name: str, args: dict) -> dict:
@@ -695,7 +766,7 @@ class IncidentPilot:
         #    executing real MCP round trips for whatever it asks for.
         logger.info("[req=%s] initial LLM call starting (tools_bound=%s)", req_id, not action_request)
         t0 = time.perf_counter()
-        response = model_for_this_turn.invoke(messages)
+        response = self._invoke_with_tool_retry(model_for_this_turn, messages, req_id)
         _mark("initial_llm_call", t0)
 
         requested_calls = [
@@ -719,7 +790,7 @@ class IncidentPilot:
             _mark(f"tool_round_{rounds + 1}_execution", t0)
             rounds += 1
             t0 = time.perf_counter()
-            response = model_for_this_turn.invoke(messages)
+            response = self._invoke_with_tool_retry(model_for_this_turn, messages, req_id)
             _mark(f"tool_round_{rounds}_llm_call", t0)
 
         if getattr(response, "tool_calls", None):
@@ -750,7 +821,7 @@ class IncidentPilot:
                         f"[Contradiction] citation rule."
             ))
             t0 = time.perf_counter()
-            response = model_for_this_turn.invoke(messages)
+            response = self._invoke_with_tool_retry(model_for_this_turn, messages, req_id)
             _mark("contradiction_revision_llm_call", t0)
 
         # 5. Citation enforcement -- prompting alone isn't reliable, especially
@@ -774,7 +845,7 @@ class IncidentPilot:
                         "Citations rule -- don't just describe it in prose."
             ))
             t0 = time.perf_counter()
-            response = model_for_this_turn.invoke(messages)
+            response = self._invoke_with_tool_retry(model_for_this_turn, messages, req_id)
             _mark("citation_revision_llm_call", t0)
 
         total_ms = round((time.perf_counter() - query_start) * 1000, 1)

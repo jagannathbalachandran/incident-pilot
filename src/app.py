@@ -46,7 +46,7 @@ _gc_utils._json_schema_to_python_type = _gc_json_schema_to_python_type
 # --- end workaround ---
 
 import chat_store
-from incident_pilot import IncidentPilot
+from incident_pilot import IncidentPilot, ToolCallServiceError
 from logging_config import setup_logging
 from observability import configure_observability
 from request_context import set_request_id
@@ -285,11 +285,13 @@ def _refresh_state():
 EXAMPLE_QUERIES = [
     "Please Roll back the last deploy.",
     "Just push a hotfix directly to production now.",
+    "checkout-api seems to be slow, what happened?",
     "API latency spiked 5x in the last 15 minutes, what's going on?",
     "What does the runbook say to do for a connection-pool exhaustion?",
-    "checkout-api p99 latency has been climbing gradually over the last 15 minutes, no sudden step change. What's going on and what does the runbook say to do?",
-    "A user says they logged in, browsed listings, but checkout failed — can you trace what happened to their session?",
-    "payment-service looks slow — is that affecting checkout-api too?",
+    # Commented out for demo -- keep in code, just not shown in the UI.
+    # "checkout-api p99 latency has been climbing gradually over the last 15 minutes, no sudden step change. What's going on and what does the runbook say to do?",
+    # "A user says they logged in, browsed listings, but checkout failed — can you trace what happened to their session?",
+    # "payment-service looks slow — is that affecting checkout-api too?",
 ]
 
 
@@ -515,14 +517,24 @@ def triage(incident_description: str, service: str, chat_id: str | None,
         # it's actually stale content from an earlier turn.
         logger.exception("Triage request [req=%s] failed", request_id)
         msg = str(exc)
-        hint = ""
-        if any(s in msg for s in ("rate_limit", "429", "413", "tokens per")):
-            hint = (
-                "\n\nThis is a Groq rate/size limit (per-minute or per-day token "
-                "budget), not a bug in the agent -- wait a bit and retry, or switch "
-                "`GROQ_MODEL` in `.env` if the daily quota is exhausted."
+        if isinstance(exc, ToolCallServiceError):
+            # User-facing text deliberately omits the exception type/technical
+            # detail (logged above via logger.exception for debugging) --
+            # framed as Groq being slow under load, not an implementation bug.
+            error_text = (
+                f"⚠️ **Query failed** [req={request_id}]\n\n"
+                "Groq's servers are responding slowly due to high traffic right now. "
+                "Please try again."
             )
-        error_text = f"⚠️ **Query failed** [req={request_id}]\n\n`{type(exc).__name__}: {exc}`{hint}"
+        else:
+            hint = ""
+            if any(s in msg for s in ("rate_limit", "429", "413", "tokens per")):
+                hint = (
+                    "\n\nThis is a Groq rate/size limit (per-minute or per-day token "
+                    "budget), not a bug in the agent -- wait a bit and retry, or switch "
+                    "`GROQ_MODEL` in `.env` if the daily quota is exhausted."
+                )
+            error_text = f"⚠️ **Query failed** [req={request_id}]\n\n`{type(exc).__name__}: {exc}`{hint}"
         error_trace = (
             f"**Request ID (this query):** `{request_id}`\n\n"
             "**Status:** failed before a response was produced -- see error above / container logs."
@@ -650,10 +662,16 @@ with gr.Blocks(
                             autofocus=True,
                         )
                         with gr.Column(scale=1, min_width=160):
+                            # Hidden for the demo -- kept wired at
+                            # "(all services)" so query() still works
+                            # unchanged; the agent scopes telemetry itself
+                            # from the incident description and its own tool
+                            # judgement.
                             triage_service_dd = gr.Dropdown(
                                 choices=TRIAGE_SERVICE_CHOICES,
                                 value="(all services)",
                                 label="Scope to service",
+                                visible=False,
                             )
                             submit_btn = gr.Button("🚀 Triage", variant="primary", size="lg")
 
