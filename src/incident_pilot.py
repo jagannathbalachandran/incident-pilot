@@ -226,7 +226,7 @@ class IncidentPilot:
         # models (each has its own separate per-day token budget) without a
         # code change -- e.g. drop to llama-3.1-8b-instant when the 70b
         # model's daily quota is exhausted.
-        model_name = os.environ.get("GROQ_MODEL", "llama-3.1-8b-instant")
+        model_name = os.environ.get("GROQ_MODEL", "openai/gpt-oss-120b")
         self._model_name = model_name
         logger.info("Initialising IncidentPilot with model=%s", model_name)
         self.system_prompt = SYSTEM_PROMPT_PATH.read_text()

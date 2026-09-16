@@ -144,7 +144,8 @@ services:
       - GROQ_API_KEY=${GROQ_API_KEY:-}
       # Groq model — each model has its own per-day token budget, so switch
       # here (e.g. llama-3.3-70b-versatile) when one model's quota is spent.
-      - GROQ_MODEL=${GROQ_MODEL:-llama-3.3-70b-versatile}
+      #- GROQ_MODEL=${GROQ_MODEL:-llama-3.3-70b-versatile}
+      - GROQ_MODEL=${GROQ_MODEL:-openai/gpt-oss-120b}
       # Observability (Phoenix) — off unless PHOENIX_TRACING=true is set in
       # .env/shell. Runs in-process inside this container (no separate
       # container/stack needed) and serves its UI on port 6006, published
