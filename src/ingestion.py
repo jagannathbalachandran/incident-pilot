@@ -328,9 +328,19 @@ def build_vectorstore(
     """
     # 1. Wipe and recreate
     if vectorstore_dir.exists():
-        shutil.rmtree(vectorstore_dir)
-        print(f"Deleted existing vector store at {vectorstore_dir}")
-    vectorstore_dir.mkdir(parents=True)
+        # Clear contents in place rather than rmtree-ing the directory itself
+        # and recreating it -- when this path is a Docker bind mount (as
+        # synthetic-data/vectorstore/ is, per docker-compose.yml), removing
+        # the mount point itself fails with "Device or resource busy" even
+        # though its contents can be freely deleted.
+        for entry in vectorstore_dir.iterdir():
+            if entry.is_dir() and not entry.is_symlink():
+                shutil.rmtree(entry)
+            else:
+                entry.unlink()
+        print(f"Cleared existing vector store at {vectorstore_dir}")
+    else:
+        vectorstore_dir.mkdir(parents=True)
 
     # 2. Create embedding model once — shared by SemanticChunker and ChromaDB
     print(f"\nLoading embedding model ({EMBEDDING_MODEL_NAME})...")
