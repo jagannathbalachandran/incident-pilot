@@ -1,15 +1,15 @@
 """
 Ingestion pipeline.
 
-Indexes two corpora: runbooks (synthetic-data/latest_runbooks/ by default --
-mixes markdown with PDF/DOCX to simulate the format diversity a real
-enterprise runbook corpus would have) and postmortems
-(synthetic-data/postmorterms/, markdown) -- frontmatter stripped for
-markdown sources, then chunked with SemanticChunker, which embeds
-sentences and splits where meaning shifts significantly (not a plain ##
-header split, and not aware of PDF/DOCX structure either -- see
-docs/ or ask why latest_runbooks/ measurably chunks differently from the
-same content as clean markdown, even though nothing semantic changed).
+Indexes two corpora: runbooks (synthetic-data/latest_runbooks/ -- mixes
+markdown with PDF/DOCX to simulate the format diversity a real enterprise
+runbook corpus would have) and postmortems (synthetic-data/postmorterms/,
+markdown) -- frontmatter stripped for markdown sources, then chunked with
+SemanticChunker, which embeds sentences and splits where meaning shifts
+significantly (not a plain ## header split, and not aware of PDF/DOCX
+structure either -- see docs/ or ask why latest_runbooks/ measurably
+chunks differently from the same content as clean markdown, even though
+nothing semantic changed).
 
   Safety net: any chunk exceeding MAX_CHUNK_TOKENS (measured with the same
   tokenizer the embedding model uses) is further split by
@@ -19,18 +19,8 @@ same content as clean markdown, even though nothing semantic changed).
   The embedding model is created once and shared between SemanticChunker
   and ChromaDB to avoid loading it twice.
 
-synthetic-data/runbooks/ (the original all-markdown corpus, no format
-diversity) is kept as a legacy/reference corpus -- build it via
-`python src/ingestion.py --legacy-runbooks` into its own separate vector
-store (vectorstore_legacy_runbooks/) without touching the production one.
-synthetic-data/real-runbooks/ (PDF/DOCX) is not directly indexed -- it was
-the source used to build latest_runbooks/'s PDF/DOCX files (see
-synthetic-data/latest_runbooks/ and the build script referenced in git
-history), not read by ingestion.py itself.
-
 Usage:
-    python src/ingestion.py                  # production: latest_runbooks/ + postmorterms/ -> vectorstore/
-    python src/ingestion.py --legacy-runbooks  # reference: runbooks/ + postmorterms/ -> vectorstore_legacy_runbooks/
+    python src/ingestion.py   # latest_runbooks/ + postmorterms/ -> vectorstore/
 """
 
 import json
@@ -53,26 +43,14 @@ from transformers import AutoTokenizer
 
 REPO_ROOT = Path(__file__).parent.parent
 POSTMORTEMS_DIR    = REPO_ROOT / "synthetic-data" / "postmorterms"
-RUNBOOKS_DIR       = REPO_ROOT / "synthetic-data" / "runbooks"
-REAL_RUNBOOKS_DIR  = REPO_ROOT / "synthetic-data" / "real-runbooks"
 VECTORSTORE_DIR    = REPO_ROOT / "synthetic-data" / "vectorstore"
 
 # latest_runbooks/ mixes markdown with PDF/DOCX (some services' runbooks
 # converted to PDF/DOCX, others left as markdown, plus one new PDF-only
 # service) to simulate the format diversity a real enterprise runbook
-# corpus would have, while keeping runbook *content* identical to
-# runbooks/ where a service has both. This is now the PRODUCTION corpus --
-# build_vectorstore()'s defaults below build FROM here INTO the same
-# VECTORSTORE_DIR the shipped app already reads, per the benchmark
-# comparison in eval/benchmarks/ (hyde_latest_runbooks/hype_latest_runbooks
-# baselines) showing this corpus is what the app should actually run on.
+# corpus would have. This is the runbook corpus that build_vectorstore()
+# indexes by default, into VECTORSTORE_DIR, which the shipped app reads.
 LATEST_RUNBOOKS_DIR = REPO_ROOT / "synthetic-data" / "latest_runbooks"
-
-# runbooks/ (all-markdown, no format diversity) is kept as a legacy/
-# reference corpus -- not deleted, still buildable via --legacy-runbooks,
-# into its own separate vector store so it never collides with the
-# production one.
-VECTORSTORE_LEGACY_RUNBOOKS_DIR = REPO_ROOT / "synthetic-data" / "vectorstore_legacy_runbooks"
 
 # Single source of truth for the embedding model -- used for the tokenizer
 # below, the HuggingFaceEmbeddings instance in build_vectorstore(), and the
@@ -96,10 +74,10 @@ MAX_CHUNK_TOKENS = 230
 
 FRONTMATTER_RE = re.compile(r"^---\n.*?\n---\n", re.DOTALL)
 
-# Every source filename's service identifier -- covers both latest_runbooks/
-# (mixed markdown/PDF/DOCX) and the legacy all-markdown runbooks/, plus
-# postmorterms/. Markdown sources also carry this in `service:` frontmatter,
-# but PDF/DOCX (extracted as plain text, no frontmatter) have no other way
+# Every source filename's service identifier -- covers latest_runbooks/
+# (mixed markdown/PDF/DOCX) and postmorterms/. Markdown sources also carry
+# this in `service:` frontmatter, but PDF/DOCX (extracted as plain text, no
+# frontmatter) have no other way
 # to recover it, so a single explicit map is used for every source rather
 # than parsing frontmatter for some and hardcoding others. Same pattern as
 # eval/source_aliases.py's SOURCE_ALIASES for the same PDF/DOCX filenames.
@@ -344,15 +322,9 @@ def build_vectorstore(
     vectorstore_dir: Path = VECTORSTORE_DIR,
     corpus_tag: str = "latest_runbooks+postmorterms",
 ) -> Chroma:
-    """Defaults build the PRODUCTION corpus: latest_runbooks/ (mixed
+    """Builds the runbook + postmortem corpus: latest_runbooks/ (mixed
     markdown/PDF/DOCX, simulating real enterprise format diversity) +
     postmorterms/ -> vectorstore/, the same location the shipped app reads.
-    Benchmark comparison in eval/benchmarks/ (hyde_latest_runbooks/
-    hype_latest_runbooks baselines vs. the original runbooks-only ones)
-    is what justified this as the default. Pass runbooks_dir=RUNBOOKS_DIR
-    and vectorstore_dir=VECTORSTORE_LEGACY_RUNBOOKS_DIR (or run with
-    --legacy-runbooks below) to rebuild the old all-markdown corpus for
-    reference/comparison without touching the production vector store.
     """
     # 1. Wipe and recreate
     if vectorstore_dir.exists():
@@ -421,17 +393,8 @@ def query_vectorstore(vectorstore: Chroma, query: str, k: int = 3) -> None:
 # ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
-    import sys
-
     print("=== IncidentPilot Ingestion Pipeline ===")
-    if len(sys.argv) > 1 and sys.argv[1] == "--legacy-runbooks":
-        vectorstore = build_vectorstore(
-            runbooks_dir=RUNBOOKS_DIR,
-            vectorstore_dir=VECTORSTORE_LEGACY_RUNBOOKS_DIR,
-            corpus_tag="runbooks+postmorterms",
-        )
-    else:
-        vectorstore = build_vectorstore()  # latest_runbooks/ -> vectorstore/ (production)
+    vectorstore = build_vectorstore()  # latest_runbooks/ + postmorterms/ -> vectorstore/
     query_vectorstore(vectorstore, "connection pool exhaustion in checkout service")
     query_vectorstore(vectorstore, "high latency in checkout service")
     query_vectorstore(vectorstore, "error in add to cart service")

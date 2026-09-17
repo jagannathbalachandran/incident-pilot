@@ -11,7 +11,6 @@ synthetic-data/vectorstore/
 synthetic-data/vectorstore_hype/
 synthetic-data/vectorstore_latest_runbooks/
 synthetic-data/vectorstore_hype_latest_runbooks/
-synthetic-data/vectorstore_legacy_runbooks/
 
 # Multi-turn chat history (SQLite), created at runtime — not committed
 chats/

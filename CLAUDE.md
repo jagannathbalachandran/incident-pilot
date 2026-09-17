@@ -40,16 +40,18 @@ cd src && TOKENIZERS_PARALLELISM=false uv run python app.py
 ## Source files
 
 ### `src/ingestion.py`
-Builds ChromaDB vector store from `synthetic-data/runbooks/` + `synthetic-data/postmorterms/`
-(both markdown; YAML frontmatter stripped). Chunked with `SemanticChunker` — embeds sentences
-and splits where meaning shifts significantly (95th percentile breakpoint), not a `##`-header
-split. Any chunk exceeding `MAX_CHUNK_CHARS` (1500) gets a secondary
-`RecursiveCharacterTextSplitter` pass. Format-agnostic PDF/DOCX extractors
-(`extract_pdf_text`/`extract_docx_text`) for `synthetic-data/real-runbooks/` are defined but
-currently unused — that source was swapped out in favor of the markdown runbooks. Only needs
-re-running when the corpus changes; the vector store is volume-mounted into the `incident-pilot`
-container, but a container **restart** is still needed after re-ingesting (its in-process Chroma
-client holds a connection to the old sqlite files, which ingestion deletes and recreates).
+Builds ChromaDB vector store from `synthetic-data/latest_runbooks/` + `synthetic-data/postmorterms/`.
+`latest_runbooks/` mixes markdown with PDF/DOCX (some services' runbooks converted to PDF/DOCX,
+others left as markdown) to simulate the format diversity a real enterprise runbook corpus would
+have; postmortems are markdown only. YAML frontmatter is stripped from markdown sources; PDF/DOCX
+sources go through format-agnostic extractors (`extract_pdf_text`/`extract_docx_text`) since they
+carry no frontmatter. Chunked with `SemanticChunker` — embeds sentences and splits where meaning
+shifts significantly (95th percentile breakpoint), not a `##`-header split. Any chunk exceeding
+`MAX_CHUNK_TOKENS` (230, measured with the embedding model's own tokenizer) gets a secondary
+`RecursiveCharacterTextSplitter` pass. Only needs re-running when the corpus changes; the vector
+store is volume-mounted into the `incident-pilot` container, but a container **restart** is still
+needed after re-ingesting (its in-process Chroma client holds a connection to the old sqlite
+files, which ingestion deletes and recreates).
 
 ### `src/incident_pilot.py`
 Core `IncidentPilot` class. Key methods:
@@ -305,9 +307,8 @@ User query
 
 | Directory | Contents |
 |---|---|
-| `synthetic-data/runbooks/` | Service runbooks (markdown) — indexed for RAG |
+| `synthetic-data/latest_runbooks/` | Service runbooks (mixed markdown/PDF/DOCX) — indexed for RAG |
 | `synthetic-data/postmorterms/` | Past-incident postmortems (markdown) — indexed for RAG |
-| `synthetic-data/real-runbooks/` | PDF/DOCX runbooks — extractors exist in `ingestion.py` but this source is currently unused |
 | `synthetic-data/vectorstore/` | ChromaDB (built by `ingestion.py`, not committed) |
 | `flask-generator/` | Docker FastAPI incident simulator |
 | `docs/` | Generation prompts, team context, and design notes (incl. `hyde_semantic_chunking_design.md`, `rag_chunking_retrieval_design.md`) |

@@ -9,8 +9,15 @@ deliberately aren't), since the source match already rules out
 same-phrase-wrong-doc false positives. See QrelItem's docstring in
 schemas.py for why relevance isn't keyed on `section` metadata.
 
-Sourced from synthetic-data/runbooks/ (the markdown corpus ingestion.py
-actually indexes) -- not synthetic-data/real-runbooks/ (PDF/DOCX, unused).
+`expected_source` uses the canonical filename from synthetic-data/runbooks/
+(the original all-markdown corpus) even for services ingestion.py now reads
+from a different file in synthetic-data/latest_runbooks/ (e.g.
+checkout_api_runbook.pdf for checkout-api) -- source_aliases.py's
+matches_expected_source() maps the actual chunk source back to this
+canonical name before comparing, so qrels stay stable across the corpus's
+format conversion. Content is identical between the two, which is why the
+must_contain phrases below still hold verbatim against the PDF-extracted
+text.
 
 Query 6 (postmortem root-cause query) held out for now -- its original
 must_contain phrase ("cold-cache behavior") doesn't actually appear as a
