@@ -75,6 +75,46 @@ def _looks_like_action_request(text: str) -> bool:
     return bool(_ACTION_REQUEST_PATTERN.search(text))
 
 
+# Code-level backstop for the same reason as the action-request guardrail
+# above: prompting/docstring examples alone haven't reliably gotten the
+# model to pass through an explicit duration the engineer stated (observed
+# substituting the tool's own default, or an unrelated number leaked from
+# retrieved alert-definition text, instead of what was actually asked).
+# When the engineer's own message unambiguously states a relative duration,
+# this overrides whatever `timeframe` value the model proposes for
+# query_metrics/query_logs -- see the override site in query() below.
+_TIMEFRAME_NUMBERED_PATTERN = re.compile(
+    r"\b(?:last|past|previous|over\s+the\s+last|in\s+the\s+last)\s+"
+    r"(\d+)\s*(minutes?|mins?|hours?|hrs?)\b",
+    re.IGNORECASE,
+)
+_TIMEFRAME_SINGULAR_PATTERN = re.compile(
+    r"\b(?:last|past|previous)\s+(minute|hour)\b",
+    re.IGNORECASE,
+)
+_TIMEFRAME_UNIT_ABBREV = {
+    "minute": "m", "minutes": "m", "min": "m", "mins": "m",
+    "hour": "h", "hours": "h", "hr": "h", "hrs": "h",
+}
+
+
+def _extract_explicit_timeframe(text: str) -> str | None:
+    """Best-effort parse of an explicit relative duration the engineer
+    stated, e.g. "slow for the last 2 minutes" -> "2m", "past hour" ->
+    "1h". Returns None if no explicit duration is found -- callers should
+    leave the model's own choice (or the tool's default) untouched then,
+    since we have nothing more reliable than the model's judgment for
+    open-ended cases like "since this morning".
+    """
+    m = _TIMEFRAME_NUMBERED_PATTERN.search(text)
+    if m:
+        return f"{m.group(1)}{_TIMEFRAME_UNIT_ABBREV[m.group(2).lower()]}"
+    m = _TIMEFRAME_SINGULAR_PATTERN.search(text)
+    if m:
+        return f"1{_TIMEFRAME_UNIT_ABBREV[m.group(1).lower()]}"
+    return None
+
+
 def _build_tools(mcp_client: MCPClient) -> list[StructuredTool]:
     """Build LangChain tool wrappers around the two MCP-backed telemetry
     tools. Each wrapper's body is just a real MCP ``call_tool`` round trip
@@ -95,7 +135,13 @@ def _build_tools(mcp_client: MCPClient) -> list[StructuredTool]:
             service: Service name to scope to (e.g. "checkout-api"). Omit
                 to query across every simulated service at once.
             timeframe: Relative window like "15m" or "1h". Defaults to the
-                last 15 minutes.
+                last 15 minutes. If the engineer's message states an
+                explicit duration, use exactly that duration -- e.g.
+                "slow for the last 2 minutes" -> timeframe="2m"; "over the
+                past hour" -> timeframe="1h". Never substitute a number
+                from retrieved runbook/postmortem text (e.g. an alert
+                rule's "p99 > 1500ms for 5 min") -- that describes when an
+                alert fires, not the window you should query.
         """
         return mcp_client.call_tool(
             "query_metrics", {"service": service, "timeframe": timeframe}
@@ -114,7 +160,13 @@ def _build_tools(mcp_client: MCPClient) -> list[StructuredTool]:
                 simulated service (needed to reconstruct a full journey,
                 since its spans land in more than one service's log stream).
             timeframe: Relative window like "15m" or "1h". Defaults to the
-                last 15 minutes.
+                last 15 minutes. If the engineer's message states an
+                explicit duration, use exactly that duration -- e.g.
+                "slow for the last 2 minutes" -> timeframe="2m"; "over the
+                past hour" -> timeframe="1h". Never substitute a number
+                from retrieved runbook/postmortem text (e.g. an alert
+                rule's "p99 > 1500ms for 5 min") -- that describes when an
+                alert fires, not the window you should query.
         """
         return mcp_client.call_tool(
             "query_logs", {"service": service, "timeframe": timeframe}
@@ -233,6 +285,8 @@ class IncidentPilot:
         self.model = ChatGroq(
             model=model_name,
             api_key=api_key,
+            temperature=0,
+            reasoning_effort="low",
         )
         self.vectorstore = self._load_vectorstore()
 
@@ -691,6 +745,11 @@ class IncidentPilot:
         if action_request:
             logger.info("[req=%s] action-request pattern matched -- tools not bound this turn", req_id)
 
+        # Code-level backstop for the timeframe argument -- see
+        # _extract_explicit_timeframe's docstring. Computed once per turn,
+        # applied on every tool round below.
+        explicit_timeframe = _extract_explicit_timeframe(user_input)
+
         # 3. Let the model decide whether/which tools to call (when bound),
         #    executing real MCP round trips for whatever it asks for.
         logger.info("[req=%s] initial LLM call starting (tools_bound=%s)", req_id, not action_request)
@@ -709,6 +768,13 @@ class IncidentPilot:
             messages.append(response)
             t0 = time.perf_counter()
             for call in response.tool_calls:
+                if (explicit_timeframe and call["name"] in ("query_metrics", "query_logs")
+                        and call["args"].get("timeframe") != explicit_timeframe):
+                    logger.info(
+                        "[req=%s] overriding %s timeframe %r -> %r (engineer stated an explicit duration)",
+                        req_id, call["name"], call["args"].get("timeframe"), explicit_timeframe,
+                    )
+                    call["args"]["timeframe"] = explicit_timeframe
                 result = self._call_mcp_tool(call["name"], call["args"])
                 tool_trace.append({"name": call["name"], "args": call["args"], "result": result})
                 if call["name"] == "query_metrics":
