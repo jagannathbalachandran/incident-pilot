@@ -58,7 +58,7 @@ POOL_CLIMBING_MINUTES = 15
 # in accelerated mode) so there's enough time to actually run triage/tool
 # calls against the incident before it moves into recovery -- the original
 # 15s/6s/20s windows were routinely gone before a query finished.
-POOL_PLATEAU_MINUTES = 120
+POOL_PLATEAU_MINUTES = 180
 POOL_RECOVERY_MINUTES = 10
 
 CACHE_FAILOVER_MINUTES = 120
