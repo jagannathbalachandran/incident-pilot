@@ -1,0 +1,510 @@
+{
+  "started_at": "2026-09-21T14:05:52Z",
+  "model_name": "openai/gpt-oss-120b",
+  "temperature": 1e-8,
+  "reasoning_effort": null,
+  "repeats": [
+    {
+      "repeat_index": 1,
+      "query": "checkout api is slow for the last 1 minute, what's the issue?",
+      "hyde_queries": [
+        "checkout api is slow for the last 1 minute, what's the issue?",
+        "checkout-api high latency symptoms and investigation",
+        "checkout-api downstream dependency timeout check",
+        "checkout-api immediate mitigation and restart procedure"
+      ],
+      "chunks": [
+        {
+          "source": "auth-service-runbook.md",
+          "section": "2. **Check whether checkout-api is also degraded at the same time.**",
+          "content": "2. **Check whether checkout-api is also degraded at the same time.**\n   Panel: `checkout-api > /checkout endpoint latency`\n   - If checkout-api's `/checkout` p99 rose in the same window → confirm via\n     the `svc_upstream_duration_ms{service=\"checkout-api\",upstream=\"auth-service\"}`\n     panel that the slow hop is specifically checkout-api's call into\n     auth-service, not something else in checkout-api itself. 3."
+        },
+        {
+          "source": "checkout_api_runbook.pdf",
+          "section": "Runbook: checkout-api",
+          "content": "Runbook: checkout-api\nWhen to use this runbook\nOpen this runbook when either of these alerts fires for checkout-api:\n- `checkout-api-p99-latency-high` (p99 > 1500ms for 5 min)\n- `checkout-api-error-rate-high` (5xx+4xx rate > 2%)\nWhich alert fired determines which triage path below applies — they lead to\ndifferent investigations, not the same checklist. Triage: if `p99-latency-high` fired\n1. **Check the connection pool dashboard.**\nPanel: `checkout-api > Postgres Pool > active_connections / max_connections`\n- If `active_connections` is pinned at `max_connections` -> go to\nKnown Issue #1 (connection pool exhaustion). 2. **Check cache hit rate.**\nPanel: `checkout-api > Redis > cache_hit_ratio`\n- If it has dropped sharply (e.g. ~95% -> under 50%) -> go to\nKnown Issue #2 (cache node failover). 3. **Check downstream dependency latency.**\nPanel: `checkout-api > Downstream Latency (by dependency)`\ncheckout-api calls `payment-service`, `inventory-svc`, and\n`fraud-scoring-svc` synchronously — a slow call to any of these shows up\nin checkout-api's own latency even though checkout-api itself is healthy. - If a dependency's p99 spiked at the same time as checkout-api's -> this\nis not a checkout-api incident. Escalate to that dependency's on-call\ninstead of continuing to investigate here — there is no local fix. 4."
+        },
+        {
+          "source": "checkout_api_runbook.pdf",
+          "section": "If none of the above resolve it, escalate per the path below. Triage: if `error-",
+          "content": "If none of the above resolve it, escalate per the path below. Triage: if `error-rate-high` fired without elevated p99 latency\nFast failures point at the request or the response contract, not resource\n\ncontention — a different failure family from Known Issue #1/#2 below, which\nare both fundamentally slowness-driven. 1. **Break down the error rate by status code.**\nGrafana panel: `checkout-api > Errors by status code (4xx vs 5xx)`\n2. **If 4xx is what's climbing:**\n- **400 Bad Request** -> the payload doesn't match the expected schema\n(missing field, wrong type, invalid JSON). Check for a recent deploy\nthat changed the request contract (see\n`code-docs/checkout-api-request-schema.md` for the current expected\nschema), or a client that hasn't updated to match it. Check whether\nthe errors are concentrated on one endpoint or one caller — that\npoints at a specific client sending requests that no longer match\nwhat checkout-api expects, rather than a checkout-api-side bug. - **401 Unauthorized** -> auth token missing, expired, or invalid. Check\nfor a recent token-rotation or auth-service change, and whether the\nerrors are concentrated on one client/token rather than spread evenly\nacross all callers. 3. **If 5xx is what's climbing** (and the pool/cache checks in the other\nbranch are clean):\n- Check application error logs for exception stack traces — this points\nat a code-level bug rather than a resource-exhaustion pattern. - Check whether the errors are concentrated right after a recent deploy —\nthis is a genuine signal here, unlike the latency branch, because a\nfast-failing bug is exactly what a bad code change looks like. Known Issue #1: Postgres connection pool exhaustion\n**Symptom signature:** p99 latency climbs gradually (not a sudden step) as\n`active_connections` rises from baseline toward `max_connections`, pins at\nthe ceiling while pressure holds, then eases back down as pressure\nsubsides. Application logs show `could not obtain connection from pool\nwithin <N>ms`. **Mechanism:** each pod holds a fixed pool of pre-opened database connections\n(cheaper than opening one per request). When every connection is checked out\nand a new request arrives, it waits for one to free up. Latency rises while\nrequests wait; once the wait exceeds the pool's acquire timeout, waiting\nrequests start failing outright — which is why latency climbs before the\nerror rate does. **Contributing factors vary** — a recent deploy touching pool/timeout config\nis one possible lead, but so is an organic traffic increase or an autoscaling\nmismatch between pod count and the database's connection ceiling. Don't\nassume a deploy is the cause without checking; treat the deploy timeline\n(triage step above) as one independent lead among several. **Immediate mitigation (no deploy required):**\n- Increase the PgBouncer pool size to give the service more headroom while\nthe underlying cause is investigated:\n1. Edit `infra/pgbouncer/checkout-pool.ini`, raise `default_pool_size`\n(e.g. from 20 to 35) and/or `max_client_conn` as needed. 2. Reload PgBouncer without dropping existing connections:\npsql -h <pgbouncer-host> -p 6432 pgbouncer -c \"RELOAD;\"\n3. Confirm the new size took effect via the admin console:\npsql -h <pgbouncer-host> -p 6432 pgbouncer -c \"SHOW POOLS;\"\n- Before increasing, check headroom against Postgres's own `max_connections`\nceiling (currently 200) — raising PgBouncer's pool size only helps if\nPostgres itself has room above current demand. If PgBouncer's new ceiling\nwould push total connections close to or above 200, this shifts the\nbottleneck to Postgres rather than relieving it. - This raises the ceiling, it doesn't fix the underlying cause — treat it as\nheadroom to stabilize the service while triage continues, not a resolution."
+        },
+        {
+          "source": "2026-07-payment-service-cascade.md",
+          "section": "- **10:16** — On-call engineer begins triage on checkout-api, following `checkou",
+          "content": "- **10:16** — On-call engineer begins triage on checkout-api, following `checkout-api-runbook.md`. Pool/cache dashboards for checkout-api itself are clean — active_connections flat, cache_hit_ratio flat at ~0.95. - **10:19** — Engineer queries IncidentPilot with a description of the symptom. The agent's distributed-trace summary flags that failing checkout-api `/payment` spans all carry `error_type=upstream_error` with `payment-service` as the failed dependency, and surfaces one sample failed trace_id showing the full journey stopping at `checkout-api/payment(500)` right after a `payment-service/charge(500)` child span. - **10:21** — Engineer pivots to payment-service's own dashboard per the trace pointer; `active_connections` confirmed pinned at `max_connections` (80), consistent with Known Issue #1 in `payment-service-runbook.md`. - **10:24** — Payments-platform on-call paged directly (skipping a redundant checkout-api-side investigation, since the trace data already isolated the dependency). - **10:33** — Root cause identified: a background reconciliation job (deployed the previous night) was opening a DB connection per batch item and only releasing it on job completion, slowly starving the pool under normal request traffic. - **10:39** — Reconciliation job killed; connections begin draining back toward baseline. - **10:46** — payment-service and checkout-api `/payment` both back to baseline; incident resolved. ## Root cause\nThis was a **connection pool exhaustion** incident in payment-service, not checkout-api. A reconciliation batch job introduced the previous night opened one DB connection per item processed and never released it back to the pool until the entire job completed — effectively a slow connection leak rather than a traffic-driven exhaustion. Because the job ran on a schedule overlapping normal peak traffic, it competed with regular `/charge` requests for the same pool, eventually starving it. checkout-api's own error rate rose purely as a consequence of its `/payment` step's synchronous call into payment-service failing — checkout-api itself never had a resource problem. ## Contributing factors\n1."
+        },
+        {
+          "source": "2026-03-checkout-outage-cache.md",
+          "section": "# Postmortem: Checkout API Partial Outage — March 2, 2026",
+          "content": "# Postmortem: Checkout API Partial Outage — March 2, 2026\n\n## Summary\nAn underlying AWS availability-zone hardware fault took down one Redis node\nbacking checkout-api's cache. Redis Cluster's automatic failover promoted a\nreplica within about 2 minutes, but the newly promoted node started cold\n(empty), causing a sharp drop in cache hit ratio and a corresponding latency\nincrease while it repopulated. No manual intervention was required; the\nincident self-resolved as the cache warmed back up. ## Impact\n- ~3% of checkout attempts between 09:15 and 09:33 UTC experienced elevated\n  latency (requests succeeded, but slower than normal). - No failed checkout attempts and no error-rate increase — this incident\n  never crossed the `error-rate-high` threshold, only `p99-latency-high`. - No customer tickets received. ## Timeline (UTC)\n- **09:14** — One Redis node in the `checkout-cache` cluster becomes\n  unreachable (AWS ElastiCache host-level failure, confirmed later via AWS\n  status history). - **09:15** — Redis Cluster automatically begins failover to a replica. `checkout-api-p99-latency-high` alert fires — this was a sudden step\n  change in latency, not a gradual climb. - **09:16** — On-call checks the connection pool dashboard first, per the\n  runbook's triage checklist. `active_connections` is normal (not pinned) —\n  Known Issue #1 ruled out. - **09:17** — On-call checks cache hit ratio next."
+        },
+        {
+          "source": "2026-05-checkout-outage.md",
+          "section": "# Postmortem: Checkout API Partial Outage — May 14, 2026",
+          "content": "# Postmortem: Checkout API Partial Outage — May 14, 2026\n\n## Summary\nA deploy that reduced the per-pod Postgres connection pool timeout without adjusting `max_connections` or pool size caused connection exhaustion under normal peak traffic (no unusual load event). This produced elevated checkout latency and a rising 5xx rate for 47 minutes, resolved by rolling back the deploy. ## Impact\n- ~9% of checkout attempts between 14:02 and 14:49 UTC either failed with a 503 or exceeded the client-side 10s timeout. - Estimated 1,140 failed checkout attempts; support received 63 related tickets. - No data loss or payment double-charges occurred (retries were idempotent). ## Timeline (UTC)\n- **13:55** — Deploy of `checkout-api v2.114.0` completes, including a change to reduce `pool_acquire_timeout_ms` from 30000 to 5000 (intended to fail fast on the belief that most acquisition failures were client-side hangs, not real exhaustion). - **14:02** — `checkout-api-p99-latency-high` alert fires. - **14:04** — On-call engineer begins triage; checks recent deploys (correctly identifies v2.114.0 as the most recent change) but initially suspects the downstream `fraud-scoring-svc` due to a coincidental, unrelated blip in its dashboard. - **14:11** — Fraud-scoring-svc on-call confirms their service is healthy; triage redirects back to checkout-api. - **14:17** — Connection pool dashboard reviewed; `active_connections` confirmed pinned at `max_connections` (200). Error logs show acquisition timeouts consistent with the new 5000ms setting causing faster, more frequent failures rather than fewer. - **14:24** — Incident declared SEV1; incident commander paged. - **14:31** — Decision made to roll back to v2.113.2 rather than hotfix forward, given ongoing customer impact. - **14:38** — Rollback deploy approved by incident commander and executed. - **14:49** — Latency and error rate return to baseline; incident resolved. ## Root cause\nThis was a **connection pool exhaustion** incident. The change to `pool_acquire_timeout_ms` was intended as a resilience improvement (fail fast instead of hanging), but it was tested only in staging under low concurrency, where pool exhaustion never actually occurred. In production, at normal peak traffic, pods were already occasionally waiting close to the connection pool limit; shortening the timeout turned \"occasionally slow\" into \"frequently failing,\" because requests that would have eventually succeeded within 30s now failed at 5s and were retried, compounding pool pressure rather than relieving it. The retry-on-failure behavior in the client SDK amplified the problem: each failed acquisition triggered a client-side retry, roughly doubling effective request volume against an already-saturated pool. ## Why detection took ~15 minutes longer than it should have\nThe initial coincidental blip in `fraud-scoring-svc` sent triage down the wrong path for about 7 minutes. **Lesson:** always check the pool/connection dashboard for the affected service directly, in parallel with checking downstream dependencies — don't treat them as sequential steps."
+        }
+      ],
+      "tool_calls": [
+        {
+          "name": "query_metrics",
+          "args": {
+            "service": "checkout-api",
+            "timeframe": "5m"
+          },
+          "result": {
+            "metrics": [
+              {
+                "name": "svc_active_connections",
+                "service": "checkout-api",
+                "endpoint": "",
+                "value": "200"
+              },
+              {
+                "name": "svc_cache_hit_ratio",
+                "service": "checkout-api",
+                "endpoint": "",
+                "value": "0.95"
+              },
+              {
+                "name": "svc_error_rate_pct",
+                "service": "checkout-api",
+                "endpoint": "/checkout",
+                "value": "12.5"
+              },
+              {
+                "name": "svc_error_rate_pct",
+                "service": "checkout-api",
+                "endpoint": "/payment",
+                "value": "14.29"
+              },
+              {
+                "name": "svc_max_connections",
+                "service": "checkout-api",
+                "endpoint": "",
+                "value": "200"
+              },
+              {
+                "name": "svc_p99_latency_ms",
+                "service": "checkout-api",
+                "endpoint": "/checkout",
+                "value": "1683.3"
+              },
+              {
+                "name": "svc_p99_latency_ms",
+                "service": "checkout-api",
+                "endpoint": "/payment",
+                "value": "1769.1"
+              }
+            ],
+            "source": "live"
+          }
+        },
+        {
+          "name": "query_metrics",
+          "args": {
+            "service": "payment-service",
+            "timeframe": "5m"
+          },
+          "result": {
+            "metrics": [
+              {
+                "name": "svc_active_connections",
+                "service": "payment-service",
+                "endpoint": "",
+                "value": "118"
+              },
+              {
+                "name": "svc_cache_hit_ratio",
+                "service": "payment-service",
+                "endpoint": "",
+                "value": "0.95"
+              },
+              {
+                "name": "svc_error_rate_pct",
+                "service": "payment-service",
+                "endpoint": "/charge",
+                "value": "0"
+              },
+              {
+                "name": "svc_max_connections",
+                "service": "payment-service",
+                "endpoint": "",
+                "value": "200"
+              },
+              {
+                "name": "svc_p99_latency_ms",
+                "service": "payment-service",
+                "endpoint": "/charge",
+                "value": "180.4"
+              }
+            ],
+            "source": "live"
+          }
+        }
+      ],
+      "data_source": "live",
+      "timings": [
+        {
+          "phase": "hyde_expansion",
+          "duration_ms": 3338.6
+        },
+        {
+          "phase": "rag_retrieval",
+          "duration_ms": 3428.0
+        },
+        {
+          "phase": "initial_llm_call",
+          "duration_ms": 1246.5
+        },
+        {
+          "phase": "tool_round_1_execution",
+          "duration_ms": 68.8
+        },
+        {
+          "phase": "tool_round_1_llm_call",
+          "duration_ms": 21835.7
+        },
+        {
+          "phase": "tool_round_2_execution",
+          "duration_ms": 29.2
+        },
+        {
+          "phase": "tool_round_2_llm_call",
+          "duration_ms": 47260.8
+        },
+        {
+          "phase": "contradiction_check",
+          "duration_ms": 0.0
+        },
+        {
+          "phase": "citation_check",
+          "duration_ms": 0.0
+        },
+        {
+          "phase": "total",
+          "duration_ms": 77212.3
+        }
+      ],
+      "response": "**What the live data shows**  \n- `checkout-api` p99 latency is **1,683 ms** on `/checkout` and **1,769 ms** on `/payment` (threshold > 1,500 ms).  \n- Error‑rate for `checkout-api` is **12.5 %** (`/checkout`) and **14.3 %** (`/payment`).  \n- `svc_active_connections` is **200**, equal to `svc_max_connections` = 200 → the pool is **pinned at its ceiling**.  \n- Cache hit ratio is healthy (≈ 0.95).  \n- Downstream `payment‑service` latency (180 ms) and error‑rate (0 %) are normal.  \n\n**Interpretation** – The pattern matches **Known Issue #1: Postgres connection‑pool exhaustion** for `checkout‑api` (pool at max, high latency, high error‑rate) while the downstream dependency is healthy.  \n\n**Immediate next steps (no automated actions)**  \n\n1. **Confirm pool exhaustion** – you already see `active_connections == max_connections` (**[Live data]**).  \n2. **Verify downstream health** – `payment‑service` metrics are normal (**[Live data]**), so the issue is local to `checkout‑api`.  \n3. **Apply the runbook’s “Immediate mitigation (no deploy required)”** to give head‑room while you investigate the root cause:  \n\n   a. **Edit PgBouncer pool config** – increase `default_pool_size` (e.g. from 20 → 35) and, if needed, `max_client_conn` in `infra/pgbouncer/checkout-pool.ini`.  \n   b. **Reload PgBouncer** without dropping existing connections:  \n\n   ```bash\n   psql -h <pgbouncer-host> -p 6432 pgbouncer -c \"RELOAD;\"\n   ```  \n\n   c. **Validate the new size** via the admin console:  \n\n   ```bash\n   psql -h <pgbouncer-host> -p 6432 pgbouncer -c \"SHOW POOLS;\"\n   ```  \n\n   d. **Check Postgres capacity** – ensure the total connections after the bump stay below Postgres’s `max_connections` (currently 200) to avoid shifting the bottleneck (**[Runbook: Immediate mitigation (no deploy required)]**).  \n\n4. **Monitor** the `checkout‑api` dashboards (p99 latency, error‑rate, active connections) for the next 10‑15 minutes. If latency and error‑rate drop back to baseline, the mitigation succeeded; otherwise continue investigation (e.g., look for runaway queries, recent deploys affecting pool settings).  \n\n5. **Escalate** – because both **error‑rate > 10 %** and **p99 latency > 1.5 s** are above alert thresholds, this qualifies as a **SEV‑1** incident. Page the incident commander immediately if you haven’t already (**[Severity escalation]**).  \n\n**Why this matters** – The runbook notes that pool exhaustion produces a gradual latency climb and a sharp rise in 5xx errors once the acquire timeout is hit (**[Runbook: Known Issue #1]**). Your live metrics match that signature, and downstream services are healthy, so the fix must start at the connection‑pool level.  \n\n**Next diagnostic checks (if mitigation doesn’t resolve)**  \n\n1. Review recent deploys for changes to pool size, timeout, or DB connection settings.  \n2. Look for background jobs or batch processes that may be holding connections longer than expected (as seen in the July 2026 payment‑service incident).  \n3. Examine application logs for “could not obtain connection from pool within …” messages (**[Runbook: Known Issue #1]**).  \n\nProceed with the mitigation steps above, keep the dashboards in view, and involve the incident commander if the situation does not improve promptly."
+    },
+    {
+      "repeat_index": 2,
+      "query": "checkout api is slow for the last 1 minute, what's the issue?",
+      "hyde_queries": [
+        "checkout api is slow for the last 1 minute, what's the issue?",
+        "checkout-api latency spike analysis",
+        "checkout-api downstream service timeout investigation",
+        "checkout-api immediate mitigation steps"
+      ],
+      "chunks": [
+        {
+          "source": "auth-service-runbook.md",
+          "section": "2. **Check whether checkout-api is also degraded at the same time.**",
+          "content": "2. **Check whether checkout-api is also degraded at the same time.**\n   Panel: `checkout-api > /checkout endpoint latency`\n   - If checkout-api's `/checkout` p99 rose in the same window → confirm via\n     the `svc_upstream_duration_ms{service=\"checkout-api\",upstream=\"auth-service\"}`\n     panel that the slow hop is specifically checkout-api's call into\n     auth-service, not something else in checkout-api itself. 3."
+        },
+        {
+          "source": "payment_service_errors.pdf",
+          "section": "- Error rate back under 0.1%. - checkout-api's `/payment` error rate and `svc_up",
+          "content": "- Error rate back under 0.1%. - checkout-api's `/payment` error rate and `svc_upstream_duration_ms` for\nthe payment-service call both back to baseline. - No further connection-pool alerts for 15 minutes."
+        },
+        {
+          "source": "2026-07-payment-service-cascade.md",
+          "section": "- **10:16** — On-call engineer begins triage on checkout-api, following `checkou",
+          "content": "- **10:16** — On-call engineer begins triage on checkout-api, following `checkout-api-runbook.md`. Pool/cache dashboards for checkout-api itself are clean — active_connections flat, cache_hit_ratio flat at ~0.95. - **10:19** — Engineer queries IncidentPilot with a description of the symptom. The agent's distributed-trace summary flags that failing checkout-api `/payment` spans all carry `error_type=upstream_error` with `payment-service` as the failed dependency, and surfaces one sample failed trace_id showing the full journey stopping at `checkout-api/payment(500)` right after a `payment-service/charge(500)` child span. - **10:21** — Engineer pivots to payment-service's own dashboard per the trace pointer; `active_connections` confirmed pinned at `max_connections` (80), consistent with Known Issue #1 in `payment-service-runbook.md`. - **10:24** — Payments-platform on-call paged directly (skipping a redundant checkout-api-side investigation, since the trace data already isolated the dependency). - **10:33** — Root cause identified: a background reconciliation job (deployed the previous night) was opening a DB connection per batch item and only releasing it on job completion, slowly starving the pool under normal request traffic. - **10:39** — Reconciliation job killed; connections begin draining back toward baseline. - **10:46** — payment-service and checkout-api `/payment` both back to baseline; incident resolved. ## Root cause\nThis was a **connection pool exhaustion** incident in payment-service, not checkout-api. A reconciliation batch job introduced the previous night opened one DB connection per item processed and never released it back to the pool until the entire job completed — effectively a slow connection leak rather than a traffic-driven exhaustion. Because the job ran on a schedule overlapping normal peak traffic, it competed with regular `/charge` requests for the same pool, eventually starving it. checkout-api's own error rate rose purely as a consequence of its `/payment` step's synchronous call into payment-service failing — checkout-api itself never had a resource problem. ## Contributing factors\n1."
+        },
+        {
+          "source": "checkout_api_runbook.pdf",
+          "section": "If none of the above resolve it, escalate per the path below. Triage: if `error-",
+          "content": "If none of the above resolve it, escalate per the path below. Triage: if `error-rate-high` fired without elevated p99 latency\nFast failures point at the request or the response contract, not resource\n\ncontention — a different failure family from Known Issue #1/#2 below, which\nare both fundamentally slowness-driven. 1. **Break down the error rate by status code.**\nGrafana panel: `checkout-api > Errors by status code (4xx vs 5xx)`\n2. **If 4xx is what's climbing:**\n- **400 Bad Request** -> the payload doesn't match the expected schema\n(missing field, wrong type, invalid JSON). Check for a recent deploy\nthat changed the request contract (see\n`code-docs/checkout-api-request-schema.md` for the current expected\nschema), or a client that hasn't updated to match it. Check whether\nthe errors are concentrated on one endpoint or one caller — that\npoints at a specific client sending requests that no longer match\nwhat checkout-api expects, rather than a checkout-api-side bug. - **401 Unauthorized** -> auth token missing, expired, or invalid. Check\nfor a recent token-rotation or auth-service change, and whether the\nerrors are concentrated on one client/token rather than spread evenly\nacross all callers. 3. **If 5xx is what's climbing** (and the pool/cache checks in the other\nbranch are clean):\n- Check application error logs for exception stack traces — this points\nat a code-level bug rather than a resource-exhaustion pattern. - Check whether the errors are concentrated right after a recent deploy —\nthis is a genuine signal here, unlike the latency branch, because a\nfast-failing bug is exactly what a bad code change looks like. Known Issue #1: Postgres connection pool exhaustion\n**Symptom signature:** p99 latency climbs gradually (not a sudden step) as\n`active_connections` rises from baseline toward `max_connections`, pins at\nthe ceiling while pressure holds, then eases back down as pressure\nsubsides. Application logs show `could not obtain connection from pool\nwithin <N>ms`. **Mechanism:** each pod holds a fixed pool of pre-opened database connections\n(cheaper than opening one per request). When every connection is checked out\nand a new request arrives, it waits for one to free up. Latency rises while\nrequests wait; once the wait exceeds the pool's acquire timeout, waiting\nrequests start failing outright — which is why latency climbs before the\nerror rate does. **Contributing factors vary** — a recent deploy touching pool/timeout config\nis one possible lead, but so is an organic traffic increase or an autoscaling\nmismatch between pod count and the database's connection ceiling. Don't\nassume a deploy is the cause without checking; treat the deploy timeline\n(triage step above) as one independent lead among several. **Immediate mitigation (no deploy required):**\n- Increase the PgBouncer pool size to give the service more headroom while\nthe underlying cause is investigated:\n1. Edit `infra/pgbouncer/checkout-pool.ini`, raise `default_pool_size`\n(e.g. from 20 to 35) and/or `max_client_conn` as needed. 2. Reload PgBouncer without dropping existing connections:\npsql -h <pgbouncer-host> -p 6432 pgbouncer -c \"RELOAD;\"\n3. Confirm the new size took effect via the admin console:\npsql -h <pgbouncer-host> -p 6432 pgbouncer -c \"SHOW POOLS;\"\n- Before increasing, check headroom against Postgres's own `max_connections`\nceiling (currently 200) — raising PgBouncer's pool size only helps if\nPostgres itself has room above current demand. If PgBouncer's new ceiling\nwould push total connections close to or above 200, this shifts the\nbottleneck to Postgres rather than relieving it. - This raises the ceiling, it doesn't fix the underlying cause — treat it as\nheadroom to stabilize the service while triage continues, not a resolution."
+        },
+        {
+          "source": "checkout_api_runbook.pdf",
+          "section": "Runbook: checkout-api",
+          "content": "Runbook: checkout-api\nWhen to use this runbook\nOpen this runbook when either of these alerts fires for checkout-api:\n- `checkout-api-p99-latency-high` (p99 > 1500ms for 5 min)\n- `checkout-api-error-rate-high` (5xx+4xx rate > 2%)\nWhich alert fired determines which triage path below applies — they lead to\ndifferent investigations, not the same checklist. Triage: if `p99-latency-high` fired\n1. **Check the connection pool dashboard.**\nPanel: `checkout-api > Postgres Pool > active_connections / max_connections`\n- If `active_connections` is pinned at `max_connections` -> go to\nKnown Issue #1 (connection pool exhaustion). 2. **Check cache hit rate.**\nPanel: `checkout-api > Redis > cache_hit_ratio`\n- If it has dropped sharply (e.g. ~95% -> under 50%) -> go to\nKnown Issue #2 (cache node failover). 3. **Check downstream dependency latency.**\nPanel: `checkout-api > Downstream Latency (by dependency)`\ncheckout-api calls `payment-service`, `inventory-svc`, and\n`fraud-scoring-svc` synchronously — a slow call to any of these shows up\nin checkout-api's own latency even though checkout-api itself is healthy. - If a dependency's p99 spiked at the same time as checkout-api's -> this\nis not a checkout-api incident. Escalate to that dependency's on-call\ninstead of continuing to investigate here — there is no local fix. 4."
+        },
+        {
+          "source": "2026-03-checkout-outage-cache.md",
+          "section": "# Postmortem: Checkout API Partial Outage — March 2, 2026",
+          "content": "# Postmortem: Checkout API Partial Outage — March 2, 2026\n\n## Summary\nAn underlying AWS availability-zone hardware fault took down one Redis node\nbacking checkout-api's cache. Redis Cluster's automatic failover promoted a\nreplica within about 2 minutes, but the newly promoted node started cold\n(empty), causing a sharp drop in cache hit ratio and a corresponding latency\nincrease while it repopulated. No manual intervention was required; the\nincident self-resolved as the cache warmed back up. ## Impact\n- ~3% of checkout attempts between 09:15 and 09:33 UTC experienced elevated\n  latency (requests succeeded, but slower than normal). - No failed checkout attempts and no error-rate increase — this incident\n  never crossed the `error-rate-high` threshold, only `p99-latency-high`. - No customer tickets received. ## Timeline (UTC)\n- **09:14** — One Redis node in the `checkout-cache` cluster becomes\n  unreachable (AWS ElastiCache host-level failure, confirmed later via AWS\n  status history). - **09:15** — Redis Cluster automatically begins failover to a replica. `checkout-api-p99-latency-high` alert fires — this was a sudden step\n  change in latency, not a gradual climb. - **09:16** — On-call checks the connection pool dashboard first, per the\n  runbook's triage checklist. `active_connections` is normal (not pinned) —\n  Known Issue #1 ruled out. - **09:17** — On-call checks cache hit ratio next."
+        }
+      ],
+      "tool_calls": [
+        {
+          "name": "query_metrics",
+          "args": {
+            "service": "checkout-api",
+            "timeframe": "15m"
+          },
+          "result": {
+            "metrics": [
+              {
+                "name": "svc_active_connections",
+                "service": "checkout-api",
+                "endpoint": "",
+                "value": "200"
+              },
+              {
+                "name": "svc_cache_hit_ratio",
+                "service": "checkout-api",
+                "endpoint": "",
+                "value": "0.95"
+              },
+              {
+                "name": "svc_error_rate_pct",
+                "service": "checkout-api",
+                "endpoint": "/checkout",
+                "value": "0"
+              },
+              {
+                "name": "svc_error_rate_pct",
+                "service": "checkout-api",
+                "endpoint": "/payment",
+                "value": "25"
+              },
+              {
+                "name": "svc_max_connections",
+                "service": "checkout-api",
+                "endpoint": "",
+                "value": "200"
+              },
+              {
+                "name": "svc_p99_latency_ms",
+                "service": "checkout-api",
+                "endpoint": "/checkout",
+                "value": "1737.9"
+              },
+              {
+                "name": "svc_p99_latency_ms",
+                "service": "checkout-api",
+                "endpoint": "/payment",
+                "value": "1809.7"
+              }
+            ],
+            "source": "live"
+          }
+        },
+        {
+          "name": "query_metrics",
+          "args": {
+            "service": "payment-service",
+            "timeframe": "15m"
+          },
+          "result": {
+            "metrics": [
+              {
+                "name": "svc_active_connections",
+                "service": "payment-service",
+                "endpoint": "",
+                "value": "118"
+              },
+              {
+                "name": "svc_cache_hit_ratio",
+                "service": "payment-service",
+                "endpoint": "",
+                "value": "0.95"
+              },
+              {
+                "name": "svc_error_rate_pct",
+                "service": "payment-service",
+                "endpoint": "/charge",
+                "value": "0"
+              },
+              {
+                "name": "svc_max_connections",
+                "service": "payment-service",
+                "endpoint": "",
+                "value": "200"
+              },
+              {
+                "name": "svc_p99_latency_ms",
+                "service": "payment-service",
+                "endpoint": "/charge",
+                "value": "185.2"
+              }
+            ],
+            "source": "live"
+          }
+        }
+      ],
+      "data_source": "live",
+      "timings": [
+        {
+          "phase": "hyde_expansion",
+          "duration_ms": 3202.0
+        },
+        {
+          "phase": "rag_retrieval",
+          "duration_ms": 165.5
+        },
+        {
+          "phase": "initial_llm_call",
+          "duration_ms": 21579.2
+        },
+        {
+          "phase": "tool_round_1_execution",
+          "duration_ms": 86.4
+        },
+        {
+          "phase": "tool_round_1_llm_call",
+          "duration_ms": 27298.3
+        },
+        {
+          "phase": "tool_round_2_execution",
+          "duration_ms": 55.1
+        },
+        {
+          "phase": "tool_round_2_llm_call",
+          "duration_ms": 39523.5
+        },
+        {
+          "phase": "contradiction_check",
+          "duration_ms": 0.0
+        },
+        {
+          "phase": "citation_check",
+          "duration_ms": 0.0
+        },
+        {
+          "phase": "total",
+          "duration_ms": 91914.9
+        }
+      ],
+      "response": "**What the live data is showing**\n\n- **checkout‑api**  \n  - `svc_active_connections` = **200**, `svc_max_connections` = **200** → the pool is fully saturated. **[Live data: checkout‑api, 15 m]**  \n  - `svc_p99_latency_ms` for `/checkout` = **1738 ms**, for `/payment` = **1809 ms** (both well above the 1500 ms alert threshold). **[Live data]**  \n  - `svc_error_rate_pct` for `/payment` = **25 %**, `/checkout` = **0 %**. **[Live data]**  \n\n- **payment‑service** (the downstream dependency)  \n  - `svc_active_connections` = **118/200** (well below max).  \n  - `svc_p99_latency_ms` for `/charge` = **185 ms** (normal).  \n  - `svc_error_rate_pct` = **0 %**. **[Live data: payment‑service, 15 m]**  \n\n**Interpretation** – The checkout‑api connection pool is exhausted, causing high latency and a spike in 5xx errors on the `/payment` endpoint. The downstream payment‑service is healthy, so the problem is local to checkout‑api, not an upstream dependency. This matches the “connection‑pool exhaustion” pattern described in the checkout‑api runbook.\n\n---\n\n### Immediate diagnostic & mitigation steps\n\n1. **Confirm the pool exhaustion pattern**  \n   - Verify the `active_connections` chart (`checkout-api > Postgres Pool > active_connections / max_connections`). It should show a flat line at the ceiling. **[Runbook: Check the connection pool dashboard]**  \n\n2. **Check downstream latency** (optional sanity check)  \n   - Open the panel `checkout-api > Downstream Latency (by dependency)` and confirm that payment‑service latency is normal (as the live metrics already show). If any other dependency spikes, investigate that service instead. **[Runbook: Downstream dependency latency]**  \n\n3. **Apply the runbook’s immediate mitigation (no deploy required)**  \n   - **Increase the PgBouncer pool size** for checkout‑api:  \n     1. Edit `infra/pgbouncer/checkout-pool.ini`, raise `default_pool_size` (e.g. from 20 → 35) and, if needed, `max_client_conn`. **[Runbook: Immediate mitigation]**  \n     2. Reload PgBouncer without dropping existing connections:  \n        ```bash\n        psql -h <pgbouncer-host> -p 6432 pgbouncer -c \"RELOAD;\"\n        ```  \n     3. Verify the new limits took effect via the admin console:  \n        ```bash\n        psql -h <pgbouncer-host> -p 6432 pgbouncer -c \"SHOW POOLS;\"\n        ```  \n   - **Before applying**, ensure PostgreSQL itself has headroom (`max_connections` ≈ 200). Raising PgBouncer above that would shift the bottleneck to the database. **[Runbook: pool‑size headroom check]**  \n\n4. **Investigate the root cause of the pool fill‑up**  \n   - Review recent deploys for changes to pool size, timeout settings, or code that may hold DB connections longer than usual.  \n   - Check auth‑service latency panel `svc_upstream_duration_ms{service=\"checkout-api\",upstream=\"auth-service\"}` to rule out a slow auth hop.  \n   - Look at recent background jobs or batch processes that might be opening many connections (e.g., a nightly reconciliation job).  \n\n5. **Monitor after mitigation**  \n   - Watch `svc_active_connections` and `svc_p99_latency_ms` for the next 10‑15 minutes.  \n   - Confirm the `/payment` error rate drops back below the alert threshold (≤ 2 %).  \n\n6. **Escalate if thresholds remain critical**  \n   - If after increasing the pool the error rate stays > 10 % or p99 latency stays > 5× SLO for > 10 min, page the incident commander immediately. **[Severity escalation rule]**  \n\n---\n\n**Why this matters**\n\nThe metrics indicate a classic **connection‑pool exhaustion** (active = max, high latency, high error rate) as defined in the checkout‑api runbook. The downstream payment‑service is healthy, so fixing checkout‑api’s pool will likely restore normal checkout performance."
+    },
+    {
+      "repeat_index": 3,
+      "query": "checkout api is slow for the last 1 minute, what's the issue?",
+      "hyde_queries": [
+        "checkout api is slow for the last 1 minute, what's the issue?",
+        "checkout-api high latency symptoms and investigation",
+        "checkout-api downstream dependency timeout check",
+        "checkout-api immediate mitigation and restart procedure"
+      ],
+      "chunks": [
+        {
+          "source": "auth-service-runbook.md",
+          "section": "2. **Check whether checkout-api is also degraded at the same time.**",
+          "content": "2. **Check whether checkout-api is also degraded at the same time.**\n   Panel: `checkout-api > /checkout endpoint latency`\n   - If checkout-api's `/checkout` p99 rose in the same window → confirm via\n     the `svc_upstream_duration_ms{service=\"checkout-api\",upstream=\"auth-service\"}`\n     panel that the slow hop is specifically checkout-api's call into\n     auth-service, not something else in checkout-api itself. 3."
+        },
+        {
+          "source": "checkout_api_runbook.pdf",
+          "section": "Runbook: checkout-api",
+          "content": "Runbook: checkout-api\nWhen to use this runbook\nOpen this runbook when either of these alerts fires for checkout-api:\n- `checkout-api-p99-latency-high` (p99 > 1500ms for 5 min)\n- `checkout-api-error-rate-high` (5xx+4xx rate > 2%)\nWhich alert fired determines which triage path below applies — they lead to\ndifferent investigations, not the same checklist. Triage: if `p99-latency-high` fired\n1. **Check the connection pool dashboard.**\nPanel: `checkout-api > Postgres Pool > active_connections / max_connections`\n- If `active_connections` is pinned at `max_connections` -> go to\nKnown Issue #1 (connection pool exhaustion). 2. **Check cache hit rate.**\nPanel: `checkout-api > Redis > cache_hit_ratio`\n- If it has dropped sharply (e.g. ~95% -> under 50%) -> go to\nKnown Issue #2 (cache node failover). 3. **Check downstream dependency latency.**\nPanel: `checkout-api > Downstream Latency (by dependency)`\ncheckout-api calls `payment-service`, `inventory-svc`, and\n`fraud-scoring-svc` synchronously — a slow call to any of these shows up\nin checkout-api's own latency even though checkout-api itself is healthy. - If a dependency's p99 spiked at the same time as checkout-api's -> this\nis not a checkout-api incident. Escalate to that dependency's on-call\ninstead of continuing to investigate here — there is no local fix. 4."
+        },
+        {
+          "source": "checkout_api_runbook.pdf",
+          "section": "If none of the above resolve it, escalate per the path below. Triage: if `error-",
+          "content": "If none of the above resolve it, escalate per the path below. Triage: if `error-rate-high` fired without elevated p99 latency\nFast failures point at the request or the response contract, not resource\n\ncontention — a different failure family from Known Issue #1/#2 below, which\nare both fundamentally slowness-driven. 1. **Break down the error rate by status code.**\nGrafana panel: `checkout-api > Errors by status code (4xx vs 5xx)`\n2. **If 4xx is what's climbing:**\n- **400 Bad Request** -> the payload doesn't match the expected schema\n(missing field, wrong type, invalid JSON). Check for a recent deploy\nthat changed the request contract (see\n`code-docs/checkout-api-request-schema.md` for the current expected\nschema), or a client that hasn't updated to match it. Check whether\nthe errors are concentrated on one endpoint or one caller — that\npoints at a specific client sending requests that no longer match\nwhat checkout-api expects, rather than a checkout-api-side bug. - **401 Unauthorized** -> auth token missing, expired, or invalid. Check\nfor a recent token-rotation or auth-service change, and whether the\nerrors are concentrated on one client/token rather than spread evenly\nacross all callers. 3. **If 5xx is what's climbing** (and the pool/cache checks in the other\nbranch are clean):\n- Check application error logs for exception stack traces — this points\nat a code-level bug rather than a resource-exhaustion pattern. - Check whether the errors are concentrated right after a recent deploy —\nthis is a genuine signal here, unlike the latency branch, because a\nfast-failing bug is exactly what a bad code change looks like. Known Issue #1: Postgres connection pool exhaustion\n**Symptom signature:** p99 latency climbs gradually (not a sudden step) as\n`active_connections` rises from baseline toward `max_connections`, pins at\nthe ceiling while pressure holds, then eases back down as pressure\nsubsides. Application logs show `could not obtain connection from pool\nwithin <N>ms`. **Mechanism:** each pod holds a fixed pool of pre-opened database connections\n(cheaper than opening one per request). When every connection is checked out\nand a new request arrives, it waits for one to free up. Latency rises while\nrequests wait; once the wait exceeds the pool's acquire timeout, waiting\nrequests start failing outright — which is why latency climbs before the\nerror rate does. **Contributing factors vary** — a recent deploy touching pool/timeout config\nis one possible lead, but so is an organic traffic increase or an autoscaling\nmismatch between pod count and the database's connection ceiling. Don't\nassume a deploy is the cause without checking; treat the deploy timeline\n(triage step above) as one independent lead among several. **Immediate mitigation (no deploy required):**\n- Increase the PgBouncer pool size to give the service more headroom while\nthe underlying cause is investigated:\n1. Edit `infra/pgbouncer/checkout-pool.ini`, raise `default_pool_size`\n(e.g. from 20 to 35) and/or `max_client_conn` as needed. 2. Reload PgBouncer without dropping existing connections:\npsql -h <pgbouncer-host> -p 6432 pgbouncer -c \"RELOAD;\"\n3. Confirm the new size took effect via the admin console:\npsql -h <pgbouncer-host> -p 6432 pgbouncer -c \"SHOW POOLS;\"\n- Before increasing, check headroom against Postgres's own `max_connections`\nceiling (currently 200) — raising PgBouncer's pool size only helps if\nPostgres itself has room above current demand. If PgBouncer's new ceiling\nwould push total connections close to or above 200, this shifts the\nbottleneck to Postgres rather than relieving it. - This raises the ceiling, it doesn't fix the underlying cause — treat it as\nheadroom to stabilize the service while triage continues, not a resolution."
+        },
+        {
+          "source": "2026-07-payment-service-cascade.md",
+          "section": "- **10:16** — On-call engineer begins triage on checkout-api, following `checkou",
+          "content": "- **10:16** — On-call engineer begins triage on checkout-api, following `checkout-api-runbook.md`. Pool/cache dashboards for checkout-api itself are clean — active_connections flat, cache_hit_ratio flat at ~0.95. - **10:19** — Engineer queries IncidentPilot with a description of the symptom. The agent's distributed-trace summary flags that failing checkout-api `/payment` spans all carry `error_type=upstream_error` with `payment-service` as the failed dependency, and surfaces one sample failed trace_id showing the full journey stopping at `checkout-api/payment(500)` right after a `payment-service/charge(500)` child span. - **10:21** — Engineer pivots to payment-service's own dashboard per the trace pointer; `active_connections` confirmed pinned at `max_connections` (80), consistent with Known Issue #1 in `payment-service-runbook.md`. - **10:24** — Payments-platform on-call paged directly (skipping a redundant checkout-api-side investigation, since the trace data already isolated the dependency). - **10:33** — Root cause identified: a background reconciliation job (deployed the previous night) was opening a DB connection per batch item and only releasing it on job completion, slowly starving the pool under normal request traffic. - **10:39** — Reconciliation job killed; connections begin draining back toward baseline. - **10:46** — payment-service and checkout-api `/payment` both back to baseline; incident resolved. ## Root cause\nThis was a **connection pool exhaustion** incident in payment-service, not checkout-api. A reconciliation batch job introduced the previous night opened one DB connection per item processed and never released it back to the pool until the entire job completed — effectively a slow connection leak rather than a traffic-driven exhaustion. Because the job ran on a schedule overlapping normal peak traffic, it competed with regular `/charge` requests for the same pool, eventually starving it. checkout-api's own error rate rose purely as a consequence of its `/payment` step's synchronous call into payment-service failing — checkout-api itself never had a resource problem. ## Contributing factors\n1."
+        },
+        {
+          "source": "2026-03-checkout-outage-cache.md",
+          "section": "# Postmortem: Checkout API Partial Outage — March 2, 2026",
+          "content": "# Postmortem: Checkout API Partial Outage — March 2, 2026\n\n## Summary\nAn underlying AWS availability-zone hardware fault took down one Redis node\nbacking checkout-api's cache. Redis Cluster's automatic failover promoted a\nreplica within about 2 minutes, but the newly promoted node started cold\n(empty), causing a sharp drop in cache hit ratio and a corresponding latency\nincrease while it repopulated. No manual intervention was required; the\nincident self-resolved as the cache warmed back up. ## Impact\n- ~3% of checkout attempts between 09:15 and 09:33 UTC experienced elevated\n  latency (requests succeeded, but slower than normal). - No failed checkout attempts and no error-rate increase — this incident\n  never crossed the `error-rate-high` threshold, only `p99-latency-high`. - No customer tickets received. ## Timeline (UTC)\n- **09:14** — One Redis node in the `checkout-cache` cluster becomes\n  unreachable (AWS ElastiCache host-level failure, confirmed later via AWS\n  status history). - **09:15** — Redis Cluster automatically begins failover to a replica. `checkout-api-p99-latency-high` alert fires — this was a sudden step\n  change in latency, not a gradual climb. - **09:16** — On-call checks the connection pool dashboard first, per the\n  runbook's triage checklist. `active_connections` is normal (not pinned) —\n  Known Issue #1 ruled out. - **09:17** — On-call checks cache hit ratio next."
+        },
+        {
+          "source": "2026-05-checkout-outage.md",
+          "section": "# Postmortem: Checkout API Partial Outage — May 14, 2026",
+          "content": "# Postmortem: Checkout API Partial Outage — May 14, 2026\n\n## Summary\nA deploy that reduced the per-pod Postgres connection pool timeout without adjusting `max_connections` or pool size caused connection exhaustion under normal peak traffic (no unusual load event). This produced elevated checkout latency and a rising 5xx rate for 47 minutes, resolved by rolling back the deploy. ## Impact\n- ~9% of checkout attempts between 14:02 and 14:49 UTC either failed with a 503 or exceeded the client-side 10s timeout. - Estimated 1,140 failed checkout attempts; support received 63 related tickets. - No data loss or payment double-charges occurred (retries were idempotent). ## Timeline (UTC)\n- **13:55** — Deploy of `checkout-api v2.114.0` completes, including a change to reduce `pool_acquire_timeout_ms` from 30000 to 5000 (intended to fail fast on the belief that most acquisition failures were client-side hangs, not real exhaustion). - **14:02** — `checkout-api-p99-latency-high` alert fires. - **14:04** — On-call engineer begins triage; checks recent deploys (correctly identifies v2.114.0 as the most recent change) but initially suspects the downstream `fraud-scoring-svc` due to a coincidental, unrelated blip in its dashboard. - **14:11** — Fraud-scoring-svc on-call confirms their service is healthy; triage redirects back to checkout-api. - **14:17** — Connection pool dashboard reviewed; `active_connections` confirmed pinned at `max_connections` (200). Error logs show acquisition timeouts consistent with the new 5000ms setting causing faster, more frequent failures rather than fewer. - **14:24** — Incident declared SEV1; incident commander paged. - **14:31** — Decision made to roll back to v2.113.2 rather than hotfix forward, given ongoing customer impact. - **14:38** — Rollback deploy approved by incident commander and executed. - **14:49** — Latency and error rate return to baseline; incident resolved. ## Root cause\nThis was a **connection pool exhaustion** incident. The change to `pool_acquire_timeout_ms` was intended as a resilience improvement (fail fast instead of hanging), but it was tested only in staging under low concurrency, where pool exhaustion never actually occurred. In production, at normal peak traffic, pods were already occasionally waiting close to the connection pool limit; shortening the timeout turned \"occasionally slow\" into \"frequently failing,\" because requests that would have eventually succeeded within 30s now failed at 5s and were retried, compounding pool pressure rather than relieving it. The retry-on-failure behavior in the client SDK amplified the problem: each failed acquisition triggered a client-side retry, roughly doubling effective request volume against an already-saturated pool. ## Why detection took ~15 minutes longer than it should have\nThe initial coincidental blip in `fraud-scoring-svc` sent triage down the wrong path for about 7 minutes. **Lesson:** always check the pool/connection dashboard for the affected service directly, in parallel with checking downstream dependencies — don't treat them as sequential steps."
+        }
+      ],
+      "tool_calls": [
+        {
+          "name": "query_metrics",
+          "args": {
+            "service": "checkout-api",
+            "timeframe": "15m"
+          },
+          "result": {
+            "metrics": [
+              {
+                "name": "svc_active_connections",
+                "service": "checkout-api",
+                "endpoint": "",
+                "value": "200"
+              },
+              {
+                "name": "svc_cache_hit_ratio",
+                "service": "checkout-api",
+                "endpoint": "",
+                "value": "0.95"
+              },
+              {
+                "name": "svc_error_rate_pct",
+                "service": "checkout-api",
+                "endpoint": "/checkout",
+                "value": "12.5"
+              },
+              {
+                "name": "svc_error_rate_pct",
+                "service": "checkout-api",
+                "endpoint": "/payment",
+                "value": "0"
+              },
+              {
+                "name": "svc_max_connections",
+                "service": "checkout-api",
+                "endpoint": "",
+                "value": "200"
+              },
+              {
+                "name": "svc_p99_latency_ms",
+                "service": "checkout-api",
+                "endpoint": "/checkout",
+                "value": "1708.1"
+              },
+              {
+                "name": "svc_p99_latency_ms",
+                "service": "checkout-api",
+                "endpoint": "/payment",
+                "value": "1760.9"
+              }
+            ],
+            "source": "live"
+          }
+        }
+      ],
+      "data_source": "live",
+      "timings": [
+        {
+          "phase": "hyde_expansion",
+          "duration_ms": 2969.5
+        },
+        {
+          "phase": "rag_retrieval",
+          "duration_ms": 131.4
+        },
+        {
+          "phase": "initial_llm_call",
+          "duration_ms": 18057.2
+        },
+        {
+          "phase": "tool_round_1_execution",
+          "duration_ms": 43.5
+        },
+        {
+          "phase": "tool_round_1_llm_call",
+          "duration_ms": 35300.3
+        },
+        {
+          "phase": "contradiction_check",
+          "duration_ms": 2.7
+        },
+        {
+          "phase": "citation_check",
+          "duration_ms": 0.0
+        },
+        {
+          "phase": "total",
+          "duration_ms": 56512.7
+        }
+      ],
+      "response": "**Critical alert – page the incident commander now**  \n- The live metrics show **error‑rate 12.5 %** on the `/checkout` endpoint and **p99 latency ≈ 1.7 s** (both above the alert thresholds) while **active connections are pinned at the max 200**. This meets the “SEV 1” criteria (error‑rate > 10 % and latency > 5× SLO) and requires immediate human escalation. **Do not wait for further investigation** – notify the on‑call lead or incident commander per your escalation policy.  \n\n---\n\n### Immediate diagnostic steps (run in parallel)\n\n1. **Confirm connection‑pool exhaustion**  \n   - Verify the `checkout-api > Postgres Pool > active_connections / max_connections` panel shows the same pinning (you already have **200/200** from live data).  \n   - Check the `checkout-api > /checkout endpoint latency` panel to see the p99 spike (≈ 1708 ms).  \n   - *Reference*: **[Runbook: checkout-api]** – “If `active_connections` is pinned at `max_connections` → go to Known Issue #1 (connection pool exhaustion).”\n\n2. **Look for recent config or deploy changes**  \n   - Review the last few deploys for changes to pool size, `pool_acquire_timeout_ms`, or PgBouncer settings.  \n   - Even if no deploy is obvious, a traffic surge or autoscaling mismatch can cause the same symptom.  \n   - *Reference*: **[Runbook: checkout-api]** – “Don’t assume a deploy is the cause without checking; treat the deploy timeline as one independent lead.”\n\n3. **Apply an immediate mitigation (no code change required)**  \n   - **Increase PgBouncer pool size** (e.g., raise `default_pool_size` from 20 → 35).  \n   - Reload PgBouncer (`psql -h <pgbouncer-host> -p 6432 pgbouncer -c \"RELOAD;\"`).  \n   - Verify the new size via `SHOW POOLS;`.  \n   - Ensure PostgreSQL itself still has headroom (`max_connections` = 200) before raising the pool size.  \n   - *Reference*: **[Runbook: checkout-api]** – “Immediate mitigation (no deploy required): Increase the PgBouncer pool size …”\n\n4. **Validate the mitigation**  \n   - After reloading, watch the `active_connections` metric for a drop below the ceiling and the `/checkout` error‑rate and latency for improvement (target < 5 % error‑rate, p99 < 500 ms).  \n   - If metrics do not improve within a few minutes, proceed to step 5.\n\n5. **Escalate to downstream services if pool mitigation fails**  \n   - Check the `checkout-api > Downstream Latency (by dependency)` panel.  \n   - If any downstream service (e.g., `payment-service`, `inventory-svc`, `fraud‑scoring‑svc`) shows a concurrent p99 spike, the issue may be upstream; hand off to that service’s on‑call.  \n   - *Reference*: **[Runbook: checkout-api]** – “If a dependency's p99 spiked at the same time as checkout‑api's → this is not a checkout‑api incident. Escalate to that dependency's on‑call.”\n\n---\n\n### What to communicate to the incident commander\n\n- **Symptoms**: `/checkout` error‑rate 12.5 %, p99 latency ≈ 1.7 s, connection pool fully saturated (200/200).  \n- **Likely cause**: Connection‑pool exhaustion on `checkout‑api` (Known Issue #1).  \n- **Proposed immediate mitigation**: Raise PgBouncer pool size and reload, then monitor.  \n- **Next steps**: If metrics do not recover, investigate downstream dependencies per step 5.\n\n*All statements above are based on live telemetry ([Live data] checkout‑api, 15 min) and the official checkout‑api runbook ([Runbook: checkout‑api]).*"
+    }
+  ]
+}
