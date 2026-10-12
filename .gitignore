@@ -12,6 +12,10 @@ synthetic-data/vectorstore_hype/
 synthetic-data/vectorstore_latest_runbooks/
 synthetic-data/vectorstore_hype_latest_runbooks/
 
+# Downloaded public BEIR datasets (external data, not generated insight --
+# unlike eval/beir_public/results/, which IS committed)
+eval/beir_public/_data/
+
 # Multi-turn chat history (SQLite), created at runtime — not committed
 chats/
 *.db

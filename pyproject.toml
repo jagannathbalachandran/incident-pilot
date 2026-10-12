@@ -48,6 +48,12 @@ test = [
     "pytest",
     "httpx",
 ]
+eval = [
+    # Public-BEIR-dataset sanity check for the embedding model (eval/beir_public/)
+    # -- standardized NDCG/MAP/Recall/Precision scoring via pytrec_eval, not
+    # used anywhere in src/.
+    "beir",
+]
 dev = [
     "pytest",
     "httpx",
