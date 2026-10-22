@@ -1,0 +1,39 @@
+{
+  "dataset": "fiqa",
+  "config": "prod_config",
+  "embedding_model": "all-MiniLM-L6-v2",
+  "distance": "l2 (chroma implicit default, non-normalized embeddings)",
+  "k_values": [
+    1,
+    3,
+    5,
+    10
+  ],
+  "n_corpus": 57638,
+  "n_queries": 648,
+  "git_commit": "9f6e10acc9cedca344b0bc8bd7d4653a8bc28b14",
+  "ndcg": {
+    "NDCG@1": 0.34259,
+    "NDCG@3": 0.32579,
+    "NDCG@5": 0.33892,
+    "NDCG@10": 0.3626
+  },
+  "map": {
+    "MAP@1": 0.16677,
+    "MAP@3": 0.24614,
+    "MAP@5": 0.26924,
+    "MAP@10": 0.28562
+  },
+  "recall": {
+    "Recall@1": 0.16677,
+    "Recall@3": 0.29816,
+    "Recall@5": 0.35956,
+    "Recall@10": 0.4341
+  },
+  "precision": {
+    "P@1": 0.34259,
+    "P@3": 0.22171,
+    "P@5": 0.16636,
+    "P@10": 0.10386
+  }
+}

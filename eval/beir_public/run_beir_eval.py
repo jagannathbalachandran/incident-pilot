@@ -65,6 +65,39 @@ def load_prod_embeddings(model_name: str = EMBEDDING_MODEL_NAME) -> HuggingFaceE
 
 
 def build_corpus_vectorstore(corpus: dict, embeddings: HuggingFaceEmbeddings) -> Chroma:
+    """Indexes the BEIR corpus in ONE from_documents() call -- mirroring the
+    single call src/ingestion.py's build_vectorstore() makes -- not in smaller
+    manual batches.
+
+    from_documents() -> from_texts() already splits its input via
+    chromadb.utils.batch_utils.create_batches at the client's max_batch_size
+    (5,461 here), calling embed_documents() once per batch, so one call never
+    embeds the whole corpus in a single pass.
+
+    Manual re-batching at 128 docs/call was tried and reverted. It is a priced
+    tradeoff, not a free win, and it was reverted for FIDELITY, not for scores:
+      * it lowers peak memory ~15% (full FiQA: 1,605 MB -> 1,366 MB) by capping
+        the transient list[list[float]] that embed_documents() returns
+      * but it perturbs HNSW graph construction, which depends on how
+        insertions are batched, shifting scores ~0.5% in a DATASET-DEPENDENT
+        direction. Each figure below was reproduced twice on identical code
+        and environment:
+            SciFact NDCG@10   0.6451 unbatched -> 0.6418 batched   (-0.5%)
+            FiQA    NDCG@10   0.3626 unbatched -> 0.3649 batched   (+0.6%)
+    Neither is "more correct" -- both are approximate (HNSW) rankings, and the
+    direction of the shift is not predictable. Unbatched wins only because it
+    is the call production actually makes, keeping this script a measurement of
+    src/ingestion.py's real path. If you ever need the 240 MB, re-batching is
+    defensible -- but re-baseline both datasets first, because the numbers move.
+
+    Memory: peak working set for the full 57,638-doc FiQA run is 1,605 MB, of
+    which ~900 MB is fixed and independent of corpus size (torch ~400, MiniLM
+    ~138, the BEIR corpus dict ~68, Chroma/HNSW init and peak overshoot the
+    rest); only the remainder scales with the corpus, and sublinearly. An
+    earlier attempt was killed with ~0.9-1.2 GB free and completed unchanged
+    once ~1 GB was freed elsewhere -- the cause was starvation, not batch size.
+    Keep ~2 GB free; a full FiQA run takes ~40 min.
+    """
     documents = [
         Document(
             page_content=f"{doc.get('title', '')} {doc.get('text', '')}".strip(),
@@ -72,6 +105,12 @@ def build_corpus_vectorstore(corpus: dict, embeddings: HuggingFaceEmbeddings) ->
         )
         for doc_id, doc in corpus.items()
     ]
+    if not documents:
+        raise ValueError(
+            "Empty corpus -- nothing to index. Check that the dataset downloaded "
+            "correctly and that the split exists."
+        )
+
     # In-memory only (no persist_directory) -- a throwaway index for one run,
     # not a store anything else reads.
     return Chroma.from_documents(documents=documents, embedding=embeddings)
