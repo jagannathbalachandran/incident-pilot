@@ -10,10 +10,16 @@ HuggingFaceEmbeddings(model_name=EMBEDDING_MODEL_NAME, model_kwargs={"device":
 "cpu"}), no normalize_embeddings -- and retrieves with the same
 similarity_search_with_score() call incident_pilot.py's retrieval path uses.
 That means the ranking being scored here is literally what src/ingestion.py +
-src/incident_pilot.py would produce (same L2-on-non-normalized-vectors
-behavior, since no hnsw:space override is set), not an approximation under a
-BEIR-supplied score function. BEIR is used purely as the deterministic SCORER
-over the dataset's qrels, not as the retriever.
+src/incident_pilot.py would produce (same L2 distance, since no hnsw:space
+override is set), not an approximation under a BEIR-supplied score function.
+BEIR is used purely as the deterministic SCORER over the dataset's qrels, not
+as the retriever.
+
+"No normalize_embeddings" does NOT mean the vectors are unnormalised: the
+kwarg is never passed, but all-MiniLM-L6-v2 ends in a Normalize module, so
+embeddings come out unit-length regardless. For unit vectors
+||q-d||^2 = 2-2*cos, so Chroma's default L2 ranks identically to cosine --
+see exact_search_diag.py, which measures this.
 
 Usage:
     uv run python eval/beir_public/download.py scifact   # once
@@ -53,7 +59,8 @@ def _git_commit() -> str:
 def load_prod_embeddings(model_name: str = EMBEDDING_MODEL_NAME) -> HuggingFaceEmbeddings:
     """Mirrors src/ingestion.py's build_vectorstore() embedding call verbatim
     -- same model, same device, no normalize_embeddings -- so this tests what
-    actually ships, not a hypothetical "best" config.
+    actually ships, not a hypothetical "best" config. (The model normalises
+    internally regardless; see the module docstring.)
 
     `model_name` is overridable (via --model) purely as a fluke check: if
     swapping in a deliberately weaker model doesn't change the score, that
@@ -168,7 +175,7 @@ def main() -> None:
     evaluator = EvaluateRetrieval(None, k_values=k_values)
     ndcg, _map, recall, precision = evaluator.evaluate(qrels, results, k_values)
 
-    print(f"\n=== {args.dataset} -- {config_label} ({args.model}, L2, non-normalized) ===")
+    print(f"\n=== {args.dataset} -- {config_label} ({args.model}, HNSW + L2) ===")
     header = f"{'k':>4} {'NDCG':>8} {'MAP':>8} {'Recall':>8} {'Precision':>10}"
     print(header)
     for k in k_values:
@@ -188,7 +195,11 @@ def main() -> None:
                 "dataset": args.dataset,
                 "config": config_label,
                 "embedding_model": args.model,
-                "distance": "l2 (chroma implicit default, non-normalized embeddings)",
+                "distance": (
+                    "l2 (chroma implicit default) over unit-norm vectors -- the model's "
+                    "own Normalize layer, so L2 ranks identically to cosine"
+                ),
+                "index": "hnsw (chroma's approximate index; see exact_search_diag.py)",
                 "k_values": k_values,
                 "n_corpus": len(corpus),
                 "n_queries": len(queries),

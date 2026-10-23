@@ -1,0 +1,63 @@
+{
+  "eval_type": "diagnostic",
+  "name": "exact_search_attribution",
+  "dataset": "fiqa",
+  "purpose": "Explain why run_beir_eval.py's HNSW+L2 FiQA score (0.3626) sits below the published reference (0.3690), by splitting the gap between the approximate index and the distance metric. NOT a benchmark of production -- run_beir_eval.py is that. This removes production's approximation on purpose, in order to price it.",
+  "question": "Is the gap (a) normal ANN approximation loss, (b) a distance-metric mismatch with how the model is meant to be used, or (c) a bug in our code? These differ sharply in consequence: ANN loss vanishes on a small corpus, while (b) or (c) would degrade incident-pilot's 60-chunk store just as much as FiQA's 57,638 docs.",
+  "method": "Controlled experiment; each configuration changes exactly one variable from the previous one, so each delta is attributable to that variable alone. The corpus was embedded once and the same matrix reused for A and B, so no delta can come from embedding variation. Exact search is brute force over the full matrix (no index, hence no approximation). Same model, same '{title} {text}' concatenation, same corpus, same test queries, same pytrec_eval scoring against the same qrels throughout.",
+  "configurations": {
+    "baseline_hnsw_l2": "Chroma HNSW + L2 -- production's real path, measured separately by run_beir_eval.py",
+    "A_exact_l2": "brute force + L2 -- approximation removed, metric unchanged",
+    "B_exact_cosine": "brute force + cosine (both sides explicitly normalised) -- metric changed, exactness unchanged"
+  },
+  "embedding_model": "all-MiniLM-L6-v2",
+  "embeddings_unit_norm": true,
+  "unit_norm_note": "all-MiniLM-L6-v2 ends in a Normalize module (modules.json: Transformer -> Pooling -> 2_Normalize), so vectors are unit-length even though normalize_embeddings is never passed; measured norms are exactly 1.0. For unit vectors ||q-d||^2 = 2-2*cos(q,d), so L2 is a monotone transform of cosine and the two produce the IDENTICAL ranking. Configuration B is therefore a no-op by algebra -- its matching A at every k is a wiring check, not a finding. This is also why 'non-normalized embeddings' in the older result files in this directory, and in b8adbcb's commit message, is wrong.",
+  "n_corpus": 57638,
+  "n_queries": 648,
+  "k_values": [1, 3, 5, 10],
+  "results": {
+    "A_exact_l2": {
+      "ndcg": { "NDCG@1": 0.3472, "NDCG@3": 0.3318, "NDCG@5": 0.345, "NDCG@10": 0.3687 },
+      "map": { "MAP@1": 0.1714, "MAP@3": 0.2519, "MAP@5": 0.2751, "MAP@10": 0.2914 },
+      "recall": { "Recall@1": 0.1714, "Recall@3": 0.3054, "Recall@5": 0.3671, "Recall@10": 0.4413 },
+      "precision": { "P@1": 0.3472, "P@3": 0.2238, "P@5": 0.1676, "P@10": 0.1045 }
+    },
+    "B_exact_cosine": {
+      "ndcg": { "NDCG@1": 0.3472, "NDCG@3": 0.3318, "NDCG@5": 0.345, "NDCG@10": 0.3687 },
+      "map": { "MAP@1": 0.1714, "MAP@3": 0.2519, "MAP@5": 0.2751, "MAP@10": 0.2914 },
+      "recall": { "Recall@1": 0.1714, "Recall@3": 0.3054, "Recall@5": 0.3671, "Recall@10": 0.4413 },
+      "precision": { "P@1": 0.3472, "P@3": 0.2238, "P@5": 0.1676, "P@10": 0.1045 }
+    }
+  },
+  "attribution_ndcg_at_10": {
+    "baseline_hnsw_l2": 0.3626,
+    "A_exact_l2": 0.3687,
+    "B_exact_cosine": 0.3687,
+    "published_reference": 0.369,
+    "ann_loss": 0.0061,
+    "metric_effect": 0.0,
+    "residual": 0.0003,
+    "total_gap": 0.0064,
+    "note": "Each delta is measured against the row above it, and the three sum exactly to total_gap (0.3690 - 0.3626) -- so the attribution accounts for all of the difference: 95% the approximate index, 0% the metric, 5% (0.08% relative) unexplained."
+  },
+  "interpretation": [
+    "The gap is ANN approximation loss. Removing the approximate index recovers 0.0061 of the 0.0064; the metric contributes exactly 0.",
+    "The sign was predicted in advance, which is what makes this more than curve-fitting: HNSW can only ever MISS true neighbours, never beat them, so exact search can only tie or improve. Had exact search scored below 0.3626, the ANN explanation would have been falsified and the next suspect would have been a bug.",
+    "There is no bug. Exact search landing 0.0003 from the published reference is the strongest validation this harness has produced -- mis-wired qrels, a bad title/text concatenation, or broken preprocessing would not coincidentally reproduce an external reference.",
+    "Corroborated across corpus sizes. ANN error should grow with corpus size, and does: SciFact (5,183 docs) shows no visible loss under HNSW (0.6451 vs published 0.645), FiQA (57,638 docs) shows 1.7%. That is independent evidence from a run made days earlier for a different purpose."
+  ],
+  "production_relevance": "None at current scale, and provably so rather than approximately. The built store (synthetic-data/vectorstore/chroma.sqlite3) records ef_search=100 over 60 chunks (8 source documents), so the search beam is wider than the entire corpus: every vector is examined and retrieval is already exact. The 1.7% is a property of 57,638 documents, not of this pipeline, and would only begin to appear past roughly 100 chunks. src/ingestion.py needs no change -- its L2 default is provably equivalent to cosine for this model. By the same algebra, src/hype_ingestion.py's collection_metadata={'hnsw:space': 'cosine'} override is harmless but inert, which also means the distance metric is not a confound when comparing HyPE against the main path.",
+  "caveats": [
+    "One dataset, one model, one HNSW parameter set (ef_search=100, max_neighbors=16, ef_construction=100). This does not support a general 'HNSW costs 1.7%' claim -- that figure depends on corpus size, dimensionality and those parameters.",
+    "Every configuration here is deterministic, so re-running reproduces these figures exactly and cannot produce an error bar.",
+    "baseline_hnsw_l2 (0.3626) and published_reference (0.3690) are inputs to the attribution, not measured by this diagnostic. The first comes from eval/beir_public/results/fiqa__prod_config__20261022T062111Z.json; the second is the published figure for all-MiniLM-L6-v2 on FiQA2018."
+  ],
+  "provenance": {
+    "transcribed": true,
+    "note": "These figures were produced by a run on 2026-10-22 from a scratchpad copy of the script, at repo HEAD 35fcaf5, and are transcribed here rather than emitted by the committed exact_search_diag.py. They are reproducible: exact brute-force search is fully deterministic (unlike the HNSW path), so `uv run python eval/beir_public/exact_search_diag.py fiqa` must yield the same numbers, and that run will write its own result file with provenance.transcribed absent.",
+    "run_peak_memory_mb": 1074,
+    "git_commit_at_run": "35fcaf5"
+  },
+  "run_at": "2026-10-22T07:54:30Z"
+}
