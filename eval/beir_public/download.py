@@ -13,8 +13,8 @@ from beir import util
 
 DATA_DIR = Path(__file__).resolve().parent / "_data"
 
-# Small, CPU-feasible BEIR datasets only -- see eval/beir_public/README.md
-# (if written) for why these two were picked over the rest of the BEIR suite.
+# Small, CPU-feasible BEIR datasets only -- see eval/beir_public/EVAL.md for
+# why these two were picked over the rest of the BEIR suite.
 DATASET_URLS = {
     "scifact": "https://public.ukp.informatik.tu-darmstadt.de/thakur/BEIR/datasets/scifact.zip",
     "fiqa": "https://public.ukp.informatik.tu-darmstadt.de/thakur/BEIR/datasets/fiqa.zip",
