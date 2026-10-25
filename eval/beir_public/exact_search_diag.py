@@ -115,6 +115,8 @@ REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(REPO_ROOT / "src"))
 from ingestion import EMBEDDING_MODEL_NAME  # noqa: E402  single source of truth
 
+from references import HNSW_L2_MEASURED, PUBLISHED_REFERENCES  # noqa: E402
+
 DATA_DIR = Path(__file__).resolve().parent / "_data"
 RESULTS_DIR = Path(__file__).resolve().parent / "results"
 
@@ -125,9 +127,9 @@ EMBED_CHUNK = 2000
 QUERY_BLOCK = 64
 
 # The HNSW+L2 figure this diagnostic explains, and the external reference it is
-# compared against. Both are inputs to the attribution, not measured here.
-HNSW_L2_BASELINE = {"fiqa": 0.3626, "scifact": 0.6451}
-PUBLISHED_REFERENCE = {"fiqa": 0.3690, "scifact": 0.6450}
+# compared against. Both are inputs to the attribution, not measured here --
+# they come from references.py, the single source of truth shared with
+# run_beir_eval.py.
 
 
 def _git_commit() -> str:
@@ -258,8 +260,15 @@ def main() -> None:
     b = score(qrels, exact_topk(queries_m, docs, doc_ids, query_ids, cosine=True))
     _print_table("B: exact + cosine (explicitly normalised)", b)
 
-    baseline = HNSW_L2_BASELINE.get(args.dataset)
-    published = PUBLISHED_REFERENCE.get(args.dataset)
+    key = (args.dataset, EMBEDDING_MODEL_NAME)
+    baseline = HNSW_L2_MEASURED.get(key)
+    ref = PUBLISHED_REFERENCES.get(key)
+    published = ref["ndcg_at_10"] if ref else None
+    if baseline is None or published is None:
+        sys.exit(
+            f"No baseline/reference recorded for {key} in references.py -- "
+            f"this diagnostic attributes a gap, so it needs both endpoints."
+        )
     a10, b10 = a["ndcg"]["NDCG@10"], b["ndcg"]["NDCG@10"]
     ann_loss = round(a10 - baseline, 4) if baseline else None
     metric_effect = round(b10 - a10, 4)
@@ -344,6 +353,7 @@ def main() -> None:
             "roughly 100 chunks. src/ingestion.py needs no change -- its L2 default is "
             "provably equivalent to cosine for this model."
         ),
+        "published_reference": ref,
         "caveats": [
             "One dataset, one model, one HNSW parameter set (ef_search=100, "
             "max_neighbors=16, ef_construction=100). Does not support a general "

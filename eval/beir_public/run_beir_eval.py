@@ -39,6 +39,8 @@ from langchain_chroma import Chroma
 from langchain_core.documents import Document
 from langchain_huggingface import HuggingFaceEmbeddings
 
+from references import deviation, get_reference
+
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(REPO_ROOT / "src"))
 from ingestion import EMBEDDING_MODEL_NAME  # noqa: E402  single source of truth for the model name
@@ -184,6 +186,17 @@ def main() -> None:
             f"{recall[f'Recall@{k}']:>8.4f} {precision[f'P@{k}']:>10.4f}"
         )
 
+    reference = get_reference(args.dataset, args.model)
+    dev = deviation(ndcg.get("NDCG@10"), reference)
+    if dev is None:
+        print("\nNo published reference for this dataset/model pair -- not compared.")
+    else:
+        print(
+            f"\npublished reference NDCG@10 = {reference['ndcg_at_10']:.4f} "
+            f"({reference['search']} search)  |  ours = {ndcg['NDCG@10']:.4f}  |  "
+            f"deviation = {dev['absolute']:+.4f} ({dev['relative_pct']:+.2f}%)"
+        )
+
     RESULTS_DIR.mkdir(parents=True, exist_ok=True)
     out_path = RESULTS_DIR / (
         f"{args.dataset}__{config_label}__"
@@ -200,6 +213,11 @@ def main() -> None:
                     "own Normalize layer, so L2 ranks identically to cosine"
                 ),
                 "index": "hnsw (chroma's approximate index; see exact_search_diag.py)",
+                # null for a --model override: no published reference exists for
+                # that model/dataset pair, and comparing against another model's
+                # would manufacture a meaningless deviation
+                "published_reference": reference,
+                "deviation_ndcg_at_10": deviation(ndcg.get("NDCG@10"), reference),
                 "k_values": k_values,
                 "n_corpus": len(corpus),
                 "n_queries": len(queries),

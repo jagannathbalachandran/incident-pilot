@@ -3,6 +3,8 @@
   "config": "override__sentence-transformers_average_word_embeddings_glove.6B.300d",
   "embedding_model": "sentence-transformers/average_word_embeddings_glove.6B.300d",
   "distance": "l2 (chroma implicit default, non-normalized embeddings)",
+  "published_reference": null,
+  "deviation_ndcg_at_10": null,
   "k_values": [
     1,
     3,
@@ -35,5 +37,7 @@
     "P@3": 0.10111,
     "P@5": 0.07067,
     "P@10": 0.043
-  }
+  },
+  "index": "hnsw (chroma's approximate index; see exact_search_diag.py)",
+  "backfilled": "published_reference and deviation_ndcg_at_10 added retrospectively from references.py; the measured metrics are untouched"
 }
